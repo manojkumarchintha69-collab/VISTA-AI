@@ -120,7 +120,12 @@ CAMERA_NODES = {
 }
 
 # 5. Fetch SQLite Database Logs
-conn = sqlite3.connect("traffic.db")
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+DB_PATH = BASE_DIR / "traffic.db"
+
+conn = sqlite3.connect(DB_PATH)
 df = pd.read_sql_query("SELECT * FROM vehicle_logs", conn)
 conn.close()
 
