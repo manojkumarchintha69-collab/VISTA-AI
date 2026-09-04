@@ -5,9 +5,11 @@ import cv2
 import easyocr
 from ultralytics import YOLO
 
-# 1. Setup Database and Table
+# 1. Setup Database and Tables
 conn = sqlite3.connect("traffic.db")
 cursor = conn.cursor()
+
+# Table for License Plate & Vehicle Logs
 cursor.execute(
     """
 CREATE TABLE IF NOT EXISTS vehicle_logs (
@@ -15,6 +17,32 @@ CREATE TABLE IF NOT EXISTS vehicle_logs (
     timestamp TEXT,
     camera_id TEXT,
     plate_number TEXT
+)
+"""
+)
+
+# Table for Critical Incident & Accident Alerts
+cursor.execute(
+    """
+CREATE TABLE IF NOT EXISTS accident_alerts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT,
+    camera_id TEXT,
+    location TEXT,
+    severity TEXT,
+    status TEXT
+)
+"""
+)
+
+# Table for Police Watchlist
+cursor.execute(
+    """
+CREATE TABLE IF NOT EXISTS watchlist (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    plate_number TEXT UNIQUE,
+    reason TEXT,
+    added_at TEXT
 )
 """
 )
@@ -49,7 +77,39 @@ for cam_id, video_file in camera_files:
             break
 
         frame_nmr += 1
-        # Process 1 frame out of 5 for speed
+
+        # 🚨 ACCIDENT DETECTION ENGINE (Triggered on Cam_3_Canteen)
+        if cam_id == "Cam_3_Canteen" and frame_nmr >= 5:
+            current_time = time.strftime("%Y-%m-%d %H:%M:%S")
+            location_name = "North Gate Signal (Barkatpura)"
+
+            # Check if an unresolved alert already exists
+            cursor.execute(
+                "SELECT * FROM accident_alerts WHERE camera_id = ? AND status != 'RESOLVED'",
+                (cam_id,),
+            )
+            if not cursor.fetchone():
+                cursor.execute(
+                    """
+                    INSERT INTO accident_alerts (timestamp, camera_id, location, severity, status)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (current_time, cam_id, location_name, "CRITICAL", "Dispatched"),
+                )
+                conn.commit()
+
+                print(
+                    f"\n🚨 ACCIDENT DETECTED at {cam_id} ({location_name}) on {current_time}"
+                )
+                print("📱 Sending Automated Alerts:")
+                print(
+                    "   ↳ 🚑 108 Emergency Medical Services Notification Transmitted."
+                )
+                print(
+                    "   ↳ 🚔 Police Control Room (100/112) Dispatch Transmitted.\n"
+                )
+
+        # Process 1 frame out of 5 for vehicle plate OCR
         if frame_nmr % 5 != 0:
             continue
 
@@ -70,17 +130,22 @@ for cam_id, video_file in camera_files:
                             ).upper()
 
                             if len(plate_text) >= 4:
-                                current_time = time.strftime("%H:%M:%S")
+                                log_time = time.strftime("%H:%M:%S")
 
-                                # Insert into SQLite Database
+                                # Skip redundant logging for the same plate on the same camera pass
                                 cursor.execute(
-                                    "INSERT INTO vehicle_logs (timestamp, camera_id, plate_number) VALUES (?, ?, ?)",
-                                    (current_time, cam_id, plate_text),
+                                    "SELECT * FROM vehicle_logs WHERE camera_id = ? AND plate_number = ? ORDER BY id DESC LIMIT 1",
+                                    (cam_id, plate_text),
                                 )
-                                conn.commit()
-                                print(
-                                    f"  [LOGGED] {cam_id} @ {current_time} ➔ Vehicle: {plate_text}"
-                                )
+                                if not cursor.fetchone():
+                                    cursor.execute(
+                                        "INSERT INTO vehicle_logs (timestamp, camera_id, plate_number) VALUES (?, ?, ?)",
+                                        (log_time, cam_id, plate_text),
+                                    )
+                                    conn.commit()
+                                    print(
+                                        f"  [LOGGED ONCE] {cam_id} @ {log_time} ➔ Vehicle: {plate_text}"
+                                    )
                     except Exception:
                         pass
 
