@@ -62,6 +62,14 @@ CREATE TABLE IF NOT EXISTS watchlist (
 )
 """
 )
+cursor.execute(
+    """
+CREATE TABLE IF NOT EXISTS dismissed_alerts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    log_id INTEGER UNIQUE
+)
+"""
+)
 conn.commit()
 conn.close()
 
@@ -81,14 +89,14 @@ CAMERA_NODES = {
     },
 }
 
-# 4. Sidebar: Police Hotlist & Watchlist Management
+# 4. Sidebar: Police Hotlist Portal
 st.sidebar.title("🚨 Police Hotlist Portal")
 st.sidebar.markdown(
     "Register high-priority or stolen vehicle license plates for real-time surveillance alerts."
 )
 
 with st.sidebar.form("watchlist_form", clear_on_submit=True):
-    new_plate = st.text_input("Vehicle Plate Number (e.g., TS09AB1234)").upper()
+    new_plate = st.text_input("Vehicle Plate Number (e.g., TS09AB1234)").upper().strip()
     reason = st.selectbox(
         "Flag Reason",
         ["Stolen Vehicle", "Traffic Offender", "Criminal Suspect", "Expired Registration"],
@@ -134,22 +142,25 @@ df = pd.read_sql_query("SELECT * FROM vehicle_logs ORDER BY id DESC", conn)
 accident_df = pd.read_sql_query(
     "SELECT * FROM accident_alerts WHERE status != 'RESOLVED' ORDER BY id DESC", conn
 )
-acc_history_df = pd.read_sql_query(
-    "SELECT * FROM accident_alerts ORDER BY id DESC", conn
-)
+acc_history_df = pd.read_sql_query("SELECT * FROM accident_alerts ORDER BY id DESC", conn)
+dismissed_df = pd.read_sql_query("SELECT * FROM dismissed_alerts", conn)
 
-# Identify hotlisted vehicle detections
+# Join logs with watchlist to identify hotlist detections
 watchlist_matches = pd.DataFrame()
 if not watchlist_df.empty and not df.empty:
-    watchlist_matches = df[
-        df["plate_number"].isin(watchlist_df["plate_number"])
-    ].copy()
-    if not watchlist_matches.empty:
-        watchlist_matches = watchlist_matches.merge(
-            watchlist_df[["plate_number", "reason"]], on="plate_number", how="left"
-        )
+    watchlist_matches = df.merge(watchlist_df, on="plate_number", how="inner")
 
 conn.close()
+
+# Filter out dismissed hotlist alerts
+active_watchlist_alerts = pd.DataFrame()
+if not watchlist_matches.empty:
+    if not dismissed_df.empty:
+        active_watchlist_alerts = watchlist_matches[
+            ~watchlist_matches["id"].isin(dismissed_df["log_id"])
+        ]
+    else:
+        active_watchlist_alerts = watchlist_matches.copy()
 
 # 6. Header Dashboard
 st.title("🛡️ VISTA AI: Traffic Surveillance & Emergency Control Center")
@@ -178,8 +189,7 @@ if not accident_df.empty:
         with col_acc2:
             st.write("")
             st.write("")
-            is_resolved = st.toggle("Mark Incident Resolved", key=f"toggle_acc_{c_id}")
-            if is_resolved:
+            if st.toggle("Mark Incident Resolved", key=f"toggle_acc_{c_id}"):
                 c_res = get_db_connection()
                 cur_res = c_res.cursor()
                 cur_res.execute(
@@ -189,17 +199,30 @@ if not accident_df.empty:
                 c_res.close()
                 st.rerun()
 
-# ⚠️ HOTLIST ALERT BANNERS
-active_watchlist_matches = pd.DataFrame()
-if not watchlist_matches.empty:
-    active_watchlist_matches = watchlist_matches.head(3)
-    for idx, w_row in active_watchlist_matches.iterrows():
-        st.warning(f"""
-            ### ⚠️ POLICE HOTLIST DETECTED
-            * **Target Vehicle Plate:** `{w_row['plate_number']}`
-            * **Offense / Flag Reason:** {w_row['reason']}
-            * **Spotted at Node:** `{w_row['camera_id']}` at `{w_row['timestamp']}`
-        """)
+# ⚠️ POLICE HOTLIST ALERT BANNERS
+if not active_watchlist_alerts.empty:
+    for idx, w_row in active_watchlist_alerts.head(3).iterrows():
+        col_w1, col_w2 = st.columns([0.75, 0.25])
+        log_id = int(w_row["id"])
+        with col_w1:
+            st.warning(f"""
+                ### ⚠️ POLICE HOTLIST VEHICLE DETECTED
+                * **Target Vehicle Plate:** `{w_row['plate_number']}`
+                * **Offense / Flag Reason:** {w_row['reason']}
+                * **Spotted at Node:** `{w_row['camera_id']}` at `{w_row['timestamp']}`
+            """)
+        with col_w2:
+            st.write("")
+            st.write("")
+            if st.toggle("Dismiss Watchlist Alert", key=f"toggle_wl_{log_id}"):
+                c_dis = get_db_connection()
+                cur_dis = c_dis.cursor()
+                cur_dis.execute(
+                    "INSERT OR IGNORE INTO dismissed_alerts (log_id) VALUES (?)", (log_id,)
+                )
+                c_dis.commit()
+                c_dis.close()
+                st.rerun()
 
 st.markdown("---")
 
@@ -227,7 +250,7 @@ with tab1:
 
     search_plate = st.text_input(
         "🔎 Enter Plate Number to Track Dynamic Route (e.g., WILDFILMS):", key="map_search"
-    ).upper()
+    ).upper().strip()
 
     m = folium.Map(location=[17.3890, 78.4910], zoom_start=14, tiles="OpenStreetMap")
 
@@ -237,8 +260,8 @@ with tab1:
         if cam_id in crash_cams:
             icon = folium.Icon(color="red", icon="plus", prefix="fa")
         elif (
-            not active_watchlist_matches.empty
-            and cam_id == active_watchlist_matches.iloc[0]["camera_id"]
+            not active_watchlist_alerts.empty
+            and cam_id == active_watchlist_alerts.iloc[0]["camera_id"]
         ):
             icon = folium.Icon(color="orange", icon="warning-sign")
         else:
@@ -251,14 +274,12 @@ with tab1:
         ).add_to(m)
 
     # 2. DYNAMIC TRAJECTORY ROUTE GENERATION
-    target_plate_to_track = search_plate.strip() if search_plate else ""
+    target_plate_to_track = search_plate if search_plate else ""
 
-    # Default to tracking hotlist vehicle if no manual plate search is specified
-    if not target_plate_to_track and not active_watchlist_matches.empty:
-        target_plate_to_track = active_watchlist_matches.iloc[0]["plate_number"]
+    if not target_plate_to_track and not active_watchlist_alerts.empty:
+        target_plate_to_track = active_watchlist_alerts.iloc[0]["plate_number"]
 
     if target_plate_to_track and not df.empty:
-        # Fetch chronological detections for this target plate
         target_hits = df[
             df["plate_number"]
             .astype(str)
@@ -274,12 +295,10 @@ with tab1:
                 t_stamp = row.get("timestamp", "N/A")
                 if cid in CAMERA_NODES:
                     coord = CAMERA_NODES[cid]["coords"]
-                    # Add to line path if it's the first point or a movement to a new camera
                     if not dynamic_coords or dynamic_coords[-1] != coord:
                         dynamic_coords.append(coord)
                         route_summary.append(f"{cid} ({t_stamp})")
 
-            # Draw the dynamic route polyline ONLY if vehicle traversed between 2 or more nodes
             if len(dynamic_coords) > 1:
                 folium.PolyLine(
                     locations=dynamic_coords,
@@ -297,7 +316,6 @@ with tab1:
                     f"📍 **Target Stationed:** Target `{target_plate_to_track}` detected at node `{target_hits.iloc[0]['camera_id']}`"
                 )
     else:
-        # Static baseline road network connector (Dashed Gray line)
         base_coords = [data["coords"] for data in CAMERA_NODES.values()]
         folium.PolyLine(
             locations=base_coords,
@@ -321,23 +339,30 @@ with tab2:
     else:
         st.info("No vehicles logged in `traffic.db` yet.")
 
-# TAB 3: TARGET VEHICLE SEARCH
+# TAB 3: TARGET VEHICLE SEARCH ENGINE
 with tab3:
-    st.subheader("Plate Search & Audit Trail")
-    query_plate = st.text_input("Enter exact or partial license plate:").upper()
+    st.subheader("🔍 Target Vehicle Audit Trail Search Engine")
+    query_plate = st.text_input(
+        "Enter full or partial license plate number (e.g., TS09, WILDFILMS):", key="search_engine_input"
+    ).upper().strip()
+
     if query_plate and not df.empty:
         search_results = df[
-            df["plate_number"].str.contains(query_plate, case=False, na=False)
+            df["plate_number"].astype(str).str.contains(query_plate, case=False, na=False)
         ]
         if not search_results.empty:
-            st.success(f"Found {len(search_results)} detection record(s).")
+            st.success(f"Found {len(search_results)} detection record(s) matching '{query_plate}'.")
             st.dataframe(
-                search_results[["timestamp", "camera_id", "plate_number"]],
+                search_results[["id", "timestamp", "camera_id", "plate_number"]],
                 use_container_width=True,
                 hide_index=True,
             )
         else:
-            st.warning("No records matched your search.")
+            st.warning(f"No records in database matching '{query_plate}'.")
+    elif df.empty:
+        st.info("Vehicle log database is currently empty.")
+    else:
+        st.info("Enter a plate number above to query the complete database audit trail.")
 
 # TAB 4: COLLISION HISTORY
 with tab4:
