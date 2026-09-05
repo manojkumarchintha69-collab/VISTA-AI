@@ -110,7 +110,7 @@ for cam_id, video_file in camera_files:
                 )
 
         # Process 1 frame out of 5 for vehicle plate OCR
-        if frame_nmr % 5 != 0:
+        if frame_nmr % 2 != 0:
             continue
 
         results = model(frame, verbose=False)
