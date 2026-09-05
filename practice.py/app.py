@@ -14,7 +14,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-DB_PATH = Path("traffic.db")
+DB_PATH = Path(__file__).parent / "traffic.db"
 
 # 2. Custom CSS Theme
 st.markdown(
