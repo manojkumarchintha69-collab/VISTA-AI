@@ -146,9 +146,12 @@ acc_history_df = pd.read_sql_query("SELECT * FROM accident_alerts ORDER BY id DE
 dismissed_df = pd.read_sql_query("SELECT * FROM dismissed_alerts", conn)
 
 # Join logs with watchlist to identify hotlist detections
+# Join logs with watchlist to identify hotlist detections
 watchlist_matches = pd.DataFrame()
 if not watchlist_df.empty and not df.empty:
-    watchlist_matches = df.merge(watchlist_df, on="plate_number", how="inner")
+    # Retain the vehicle_logs ID as log_id explicitly
+    df_temp = df.copy().rename(columns={"id": "log_id"})
+    watchlist_matches = df_temp.merge(watchlist_df, on="plate_number", how="inner")
 
 conn.close()
 
@@ -203,7 +206,7 @@ if not accident_df.empty:
 if not active_watchlist_alerts.empty:
     for idx, w_row in active_watchlist_alerts.head(3).iterrows():
         col_w1, col_w2 = st.columns([0.75, 0.25])
-        log_id = int(w_row["id"])
+        log_id = int(w_row["log_id"])
         with col_w1:
             st.warning(f"""
                 ### ⚠️ POLICE HOTLIST VEHICLE DETECTED
