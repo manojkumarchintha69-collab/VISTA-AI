@@ -143,28 +143,25 @@ accident_df = pd.read_sql_query(
     "SELECT * FROM accident_alerts WHERE status != 'RESOLVED' ORDER BY id DESC", conn
 )
 acc_history_df = pd.read_sql_query("SELECT * FROM accident_alerts ORDER BY id DESC", conn)
-dismissed_df = pd.read_sql_query("SELECT * FROM dismissed_alerts", conn)
 
-# Join logs with watchlist to identify hotlist detections
+# Load dismissed alerts explicitly as integer list
+dismissed_df = pd.read_sql_query("SELECT log_id FROM dismissed_alerts", conn)
+dismissed_ids = set(dismissed_df["log_id"].astype(int).tolist()) if not dismissed_df.empty else set()
+
 # Join logs with watchlist to identify hotlist detections
 watchlist_matches = pd.DataFrame()
 if not watchlist_df.empty and not df.empty:
-    # Retain the vehicle_logs ID as log_id explicitly
     df_temp = df.copy().rename(columns={"id": "log_id"})
     watchlist_matches = df_temp.merge(watchlist_df, on="plate_number", how="inner")
 
 conn.close()
 
-# Filter out dismissed hotlist alerts
+# Filter out dismissed alerts using explicit Python set filtering
 active_watchlist_alerts = pd.DataFrame()
 if not watchlist_matches.empty:
-    if not dismissed_df.empty:
-        active_watchlist_alerts = watchlist_matches[
-            ~watchlist_matches["id"].isin(dismissed_df["log_id"])
-        ]
-    else:
-        active_watchlist_alerts = watchlist_matches.copy()
-
+    active_watchlist_alerts = watchlist_matches[
+        ~watchlist_matches["log_id"].astype(int).isin(dismissed_ids)
+    ]
 # 6. Header Dashboard
 st.title("🛡️ VISTA AI: Traffic Surveillance & Emergency Control Center")
 st.markdown(
@@ -207,6 +204,7 @@ if not active_watchlist_alerts.empty:
     for idx, w_row in active_watchlist_alerts.head(3).iterrows():
         col_w1, col_w2 = st.columns([0.75, 0.25])
         log_id = int(w_row["log_id"])
+        
         with col_w1:
             st.warning(f"""
                 ### ⚠️ POLICE HOTLIST VEHICLE DETECTED
@@ -217,6 +215,7 @@ if not active_watchlist_alerts.empty:
         with col_w2:
             st.write("")
             st.write("")
+            # Set stateful key and handle immediate database write
             if st.toggle("Dismiss Watchlist Alert", key=f"toggle_wl_{log_id}"):
                 c_dis = get_db_connection()
                 cur_dis = c_dis.cursor()
@@ -226,9 +225,6 @@ if not active_watchlist_alerts.empty:
                 c_dis.commit()
                 c_dis.close()
                 st.rerun()
-
-st.markdown("---")
-
 # 7. Metrics Row
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("Total Vehicles Logged", len(df))
