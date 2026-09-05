@@ -98,7 +98,7 @@ CAMERA_NODES = {
     },
 }
 
-# 4. Sidebar: Police Hotlist Portal & Database Logs
+# 4. Sidebar: Police Hotlist Portal & Active Registry
 st.sidebar.title("🚨 Police Hotlist Portal")
 
 with st.sidebar.form("watchlist_form", clear_on_submit=True):
@@ -127,7 +127,7 @@ with st.sidebar.form("watchlist_form", clear_on_submit=True):
         finally:
             c_wl.close()
 
-# Load Real-Time Data for Sidebar & App
+# Load Real-Time Data
 conn = get_db_connection()
 df = pd.read_sql_query("SELECT * FROM vehicle_logs ORDER BY id DESC", conn)
 accident_df = pd.read_sql_query(
@@ -156,17 +156,17 @@ if not watchlist_matches.empty:
         ~watchlist_matches["log_id"].astype(int).isin(dismissed_ids)
     ]
 
-# Sidebar System Database Preview
+# Sidebar Active Hotlist Registry Table (Replaces System Database Logs)
 st.sidebar.markdown("---")
-st.sidebar.subheader("📊 System Database Logs")
-if not df.empty:
+st.sidebar.subheader("📋 Active Hotlist Registry")
+if not watchlist_df.empty:
     st.sidebar.dataframe(
-        df[["timestamp", "camera_id", "plate_number"]].head(10),
+        watchlist_df[["plate_number", "reason"]],
         use_container_width=True,
         hide_index=True,
     )
 else:
-    st.sidebar.info("Database logs empty.")
+    st.sidebar.info("No active plates registered on the hotlist.")
 
 # 5. Main Header
 st.title("🚨 VISTA AI — City-Wide ANPR & Trajectory Engine")
@@ -238,7 +238,7 @@ m2.metric("Total System Hits", len(df), "↑ Live SQLite Feed")
 m3.metric("Critical Collisions", len(accident_df), delta_color="inverse")
 m4.metric("Hotlist Hits", len(watchlist_matches), "↑ Matches Logged")
 
-# 7. Restored Tabs Structure
+# 7. Navigation Tabs
 tab1, tab2, tab3, tab4, tab5 = st.tabs(
     [
         "🗺️ Live Trajectory Map",
