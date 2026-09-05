@@ -134,6 +134,9 @@ accident_df = pd.read_sql_query(
     "SELECT * FROM accident_alerts WHERE status != 'RESOLVED' ORDER BY id DESC", conn
 )
 acc_history_df = pd.read_sql_query("SELECT * FROM accident_alerts ORDER BY id DESC", conn)
+acc_resolved_df = pd.read_sql_query(
+    "SELECT * FROM accident_alerts WHERE status = 'RESOLVED' ORDER BY id DESC", conn
+)
 watchlist_df = pd.read_sql_query("SELECT * FROM watchlist ORDER BY id DESC", conn)
 dismissed_df = pd.read_sql_query("SELECT log_id FROM dismissed_alerts", conn)
 
@@ -149,14 +152,19 @@ if not watchlist_df.empty and not df.empty:
 
 conn.close()
 
-# Filter active watchlist alerts
+# Filter active vs dismissed watchlist matches
 active_watchlist_alerts = pd.DataFrame()
+dismissed_watchlist_matches = pd.DataFrame()
+
 if not watchlist_matches.empty:
     active_watchlist_alerts = watchlist_matches[
         ~watchlist_matches["log_id"].astype(int).isin(dismissed_ids)
     ]
+    dismissed_watchlist_matches = watchlist_matches[
+        watchlist_matches["log_id"].astype(int).isin(dismissed_ids)
+    ]
 
-# Sidebar Active Hotlist Registry Table (Replaces System Database Logs)
+# Sidebar Active Hotlist Registry Table
 st.sidebar.markdown("---")
 st.sidebar.subheader("📋 Active Hotlist Registry")
 if not watchlist_df.empty:
@@ -372,26 +380,52 @@ with tab3:
         )
     st.dataframe(pd.DataFrame(cam_spec_list), use_container_width=True, hide_index=True)
 
-# TAB 4: COLLISION HISTORY
+# TAB 4: COLLISION HISTORY WITH ACTIVE / RESOLVED SUB-TABS
 with tab4:
     st.subheader("🚨 Incident & Collision Audit History")
-    if not acc_history_df.empty:
-        st.dataframe(
-            acc_history_df[["id", "timestamp", "camera_id", "location", "severity", "status"]],
-            use_container_width=True,
-            hide_index=True,
-        )
-    else:
-        st.info("No recorded collision incidents.")
+    acc_sub1, acc_sub2 = st.tabs(["🔴 Active Incidents", "✅ Completed / Resolved History"])
 
-# TAB 5: WATCHLIST HISTORY
+    with acc_sub1:
+        if not accident_df.empty:
+            st.dataframe(
+                accident_df[["id", "timestamp", "camera_id", "location", "severity", "status"]],
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.info("No active unresolved collision incidents.")
+
+    with acc_sub2:
+        if not acc_resolved_df.empty:
+            st.dataframe(
+                acc_resolved_df[["id", "timestamp", "camera_id", "location", "severity", "status"]],
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.info("No resolved collision history found.")
+
+# TAB 5: WATCHLIST HISTORY WITH ACTIVE / COMPLETED SUB-TABS
 with tab5:
-    st.subheader("⚠️ Watchlist Detections Log")
-    if not watchlist_matches.empty:
-        st.dataframe(
-            watchlist_matches[["timestamp", "camera_id", "plate_number", "reason"]],
-            use_container_width=True,
-            hide_index=True,
-        )
-    else:
-        st.info("No hotlist vehicles detected.")
+    st.subheader("⚠️ Watchlist Detections Audit Log")
+    wl_sub1, wl_sub2 = st.tabs(["🟡 Active Watchlist Alerts", "✅ Completed / Dismissed History"])
+
+    with wl_sub1:
+        if not active_watchlist_alerts.empty:
+            st.dataframe(
+                active_watchlist_alerts[["log_id", "timestamp", "camera_id", "plate_number", "reason"]],
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.info("No active undismissed hotlist alerts.")
+
+    with wl_sub2:
+        if not dismissed_watchlist_matches.empty:
+            st.dataframe(
+                dismissed_watchlist_matches[["log_id", "timestamp", "camera_id", "plate_number", "reason"]],
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.info("No completed or dismissed watchlist history found.")
