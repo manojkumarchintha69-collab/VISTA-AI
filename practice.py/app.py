@@ -9,7 +9,7 @@ from streamlit_folium import st_folium
 
 # 1. Page Configuration
 st.set_page_config(
-    page_title="VISTA AI - ANPR Control Center",
+    page_title="VISTA AI - BEL ANPR Control Center",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -73,35 +73,38 @@ CREATE TABLE IF NOT EXISTS dismissed_alerts (
 conn.commit()
 conn.close()
 
-# 3. Fixed Camera Node Coordinates
+# 3. Fixed Camera Node Coordinates & Specs
 CAMERA_NODES = {
     "Cam_1_MainGate": {
         "coords": [17.3910, 78.4890],
         "location": "Main Gate Junction (Koti)",
+        "resolution": "1080p Full HD",
+        "fps": "30 FPS",
+        "model": "Hikvision DS-2CD2T87G2-L",
     },
     "Cam_2_Junction": {
         "coords": [17.3875, 78.4925],
         "location": "Central Circle Signal (Narayanguda)",
+        "resolution": "4K Ultra HD",
+        "fps": "60 FPS",
+        "model": "Dahua IPC-HFW5842E-ZE",
     },
     "Cam_3_Canteen": {
         "coords": [17.3850, 78.4960],
         "location": "North Gate Signal (Barkatpura)",
+        "resolution": "1080p Full HD",
+        "fps": "30 FPS",
+        "model": "Bosch DINION IP starlight 8000",
     },
 }
 
-# 4. Sidebar: Police Hotlist Portal
+# 4. Sidebar: Police Hotlist Portal & Database Logs
 st.sidebar.title("🚨 Police Hotlist Portal")
-st.sidebar.markdown(
-    "Register high-priority or stolen vehicle license plates for real-time surveillance alerts."
-)
 
 with st.sidebar.form("watchlist_form", clear_on_submit=True):
-    new_plate = st.text_input("Vehicle Plate Number (e.g., TS09AB1234)").upper().strip()
-    reason = st.selectbox(
-        "Flag Reason",
-        ["Stolen Vehicle", "Traffic Offender", "Criminal Suspect", "Expired Registration"],
-    )
-    submit_btn = st.form_submit_button("Add to Hotlist")
+    new_plate = st.text_input("Enter Flagged Plate No:").upper().strip()
+    reason = st.text_input("Reason / Case Ref:")
+    submit_btn = st.form_submit_button("Add to Watchlist")
 
     if submit_btn and new_plate:
         c_wl = get_db_connection()
@@ -111,44 +114,34 @@ with st.sidebar.form("watchlist_form", clear_on_submit=True):
 
             cur_wl.execute(
                 "INSERT INTO watchlist (plate_number, reason, added_at) VALUES (?, ?, ?)",
-                (new_plate, reason, time.strftime("%Y-%m-%d %H:%M:%S")),
+                (
+                    new_plate,
+                    reason if reason else "Flagged Vehicle",
+                    time.strftime("%Y-%m-%d %H:%M:%S"),
+                ),
             )
             c_wl.commit()
-            st.sidebar.success(f"Registered `{new_plate}` to Police Hotlist!")
+            st.sidebar.success(f"Registered `{new_plate}` to Watchlist!")
         except sqlite3.IntegrityError:
-            st.sidebar.warning(f"Plate `{new_plate}` is already on the Hotlist.")
+            st.sidebar.warning(f"Plate `{new_plate}` is already registered.")
         finally:
             c_wl.close()
 
-# Display active hotlist
-st.sidebar.markdown("---")
-st.sidebar.subheader("📋 Active Hotlist Registry")
-c_wl_read = get_db_connection()
-watchlist_df = pd.read_sql_query("SELECT * FROM watchlist ORDER BY id DESC", c_wl_read)
-c_wl_read.close()
-
-if not watchlist_df.empty:
-    st.sidebar.dataframe(
-        watchlist_df[["plate_number", "reason"]],
-        use_container_width=True,
-        hide_index=True,
-    )
-else:
-    st.sidebar.info("No active plates on the hotlist.")
-
-# 5. Load Real-Time Data
+# Load Real-Time Data for Sidebar & App
 conn = get_db_connection()
 df = pd.read_sql_query("SELECT * FROM vehicle_logs ORDER BY id DESC", conn)
 accident_df = pd.read_sql_query(
     "SELECT * FROM accident_alerts WHERE status != 'RESOLVED' ORDER BY id DESC", conn
 )
 acc_history_df = pd.read_sql_query("SELECT * FROM accident_alerts ORDER BY id DESC", conn)
-
-# Load dismissed alerts explicitly as integer list
+watchlist_df = pd.read_sql_query("SELECT * FROM watchlist ORDER BY id DESC", conn)
 dismissed_df = pd.read_sql_query("SELECT log_id FROM dismissed_alerts", conn)
-dismissed_ids = set(dismissed_df["log_id"].astype(int).tolist()) if not dismissed_df.empty else set()
 
-# Join logs with watchlist to identify hotlist detections
+dismissed_ids = (
+    set(dismissed_df["log_id"].astype(int).tolist()) if not dismissed_df.empty else set()
+)
+
+# Join logs with watchlist
 watchlist_matches = pd.DataFrame()
 if not watchlist_df.empty and not df.empty:
     df_temp = df.copy().rename(columns={"id": "log_id"})
@@ -156,19 +149,30 @@ if not watchlist_df.empty and not df.empty:
 
 conn.close()
 
-# Filter out dismissed alerts using explicit Python set filtering
+# Filter active watchlist alerts
 active_watchlist_alerts = pd.DataFrame()
 if not watchlist_matches.empty:
     active_watchlist_alerts = watchlist_matches[
         ~watchlist_matches["log_id"].astype(int).isin(dismissed_ids)
     ]
-# 6. Header Dashboard
-st.title("🛡️ VISTA AI: Traffic Surveillance & Emergency Control Center")
-st.markdown(
-    "Real-time Automated License Plate Recognition (ANPR), Collision Alert System, and Dynamic Vehicle Trajectory Tracking."
-)
 
-# 🚑 ACCIDENT BANNERS FOR ALL ACTIVE CAMERA NODES
+# Sidebar System Database Preview
+st.sidebar.markdown("---")
+st.sidebar.subheader("📊 System Database Logs")
+if not df.empty:
+    st.sidebar.dataframe(
+        df[["timestamp", "camera_id", "plate_number"]].head(10),
+        use_container_width=True,
+        hide_index=True,
+    )
+else:
+    st.sidebar.info("Database logs empty.")
+
+# 5. Main Header
+st.title("🚨 VISTA AI — City-Wide ANPR & Trajectory Engine")
+st.markdown("##### Vision Intelligence For Smart Traffic Analytics")
+
+# 🚑 ACCIDENT BANNERS
 crash_cams = []
 if not accident_df.empty:
     for idx, crash_row in accident_df.iterrows():
@@ -204,7 +208,7 @@ if not active_watchlist_alerts.empty:
     for idx, w_row in active_watchlist_alerts.head(3).iterrows():
         col_w1, col_w2 = st.columns([0.75, 0.25])
         log_id = int(w_row["log_id"])
-        
+
         with col_w1:
             st.warning(f"""
                 ### ⚠️ POLICE HOTLIST VEHICLE DETECTED
@@ -215,7 +219,6 @@ if not active_watchlist_alerts.empty:
         with col_w2:
             st.write("")
             st.write("")
-            # Set stateful key and handle immediate database write
             if st.toggle("Dismiss Watchlist Alert", key=f"toggle_wl_{log_id}"):
                 c_dis = get_db_connection()
                 cur_dis = c_dis.cursor()
@@ -225,35 +228,42 @@ if not active_watchlist_alerts.empty:
                 c_dis.commit()
                 c_dis.close()
                 st.rerun()
-# 7. Metrics Row
-m1, m2, m3, m4 = st.columns(4)
-m1.metric("Total Vehicles Logged", len(df))
-m2.metric("Active Camera Feeds", f"{len(CAMERA_NODES)} Live")
-m3.metric("Critical Collisions", len(accident_df), delta_color="inverse")
-m4.metric("Hotlist Hits", len(watchlist_matches))
 
-# 8. Navigation Tabs
+st.markdown("---")
+
+# 6. Metrics Row
+m1, m2, m3, m4 = st.columns(4)
+m1.metric("Active Nodes", f"{len(CAMERA_NODES)} Units", "↑ Operational")
+m2.metric("Total System Hits", len(df), "↑ Live SQLite Feed")
+m3.metric("Critical Collisions", len(accident_df), delta_color="inverse")
+m4.metric("Hotlist Hits", len(watchlist_matches), "↑ Matches Logged")
+
+# 7. Restored Tabs Structure
 tab1, tab2, tab3, tab4, tab5 = st.tabs(
     [
         "🗺️ Live Trajectory Map",
-        "📋 Live Vehicle Feed",
-        "🔍 Target Vehicle Search",
+        "📊 Database Analysis",
+        "📷 Camera Specifications",
         "🚨 Collision History",
         "⚠️ Watchlist History",
     ]
 )
 
-# TAB 1: LIVE MAP WITH DYNAMIC ROUTE RECONSTRUCTION
+# TAB 1: LIVE TRAJECTORY MAP
 with tab1:
     st.subheader("Real-Time Camera Node Map & Trajectory Route Reconstruction")
 
-    search_plate = st.text_input(
-        "🔎 Enter Plate Number to Track Dynamic Route (e.g., WILDFILMS):", key="map_search"
-    ).upper().strip()
+    search_plate = (
+        st.text_input(
+            "🔎 Enter Plate Number to Track Dynamic Route (e.g., WILDFILMS):", key="map_search"
+        )
+        .upper()
+        .strip()
+    )
 
     m = folium.Map(location=[17.3890, 78.4910], zoom_start=14, tiles="OpenStreetMap")
 
-    # 1. Plot Camera Nodes
+    # Plot Camera Nodes
     for cam_id, data in CAMERA_NODES.items():
         loc_title = data["location"]
         if cam_id in crash_cams:
@@ -272,9 +282,8 @@ with tab1:
             icon=icon,
         ).add_to(m)
 
-    # 2. DYNAMIC TRAJECTORY ROUTE GENERATION
+    # Dynamic Trajectory Line Logic
     target_plate_to_track = search_plate if search_plate else ""
-
     if not target_plate_to_track and not active_watchlist_alerts.empty:
         target_plate_to_track = active_watchlist_alerts.iloc[0]["plate_number"]
 
@@ -326,46 +335,46 @@ with tab1:
 
     st_folium(m, width=1200, height=520, returned_objects=[])
 
-# TAB 2: LIVE VEHICLE FEED
+# TAB 2: DATABASE ANALYSIS
 with tab2:
-    st.subheader("Real-Time Vehicle Recognition Logs")
+    st.subheader("📊 Comprehensive Vehicle Log Audit & Analytics")
     if not df.empty:
-        st.dataframe(
-            df[["id", "timestamp", "camera_id", "plate_number"]],
-            use_container_width=True,
-            hide_index=True,
-        )
-    else:
-        st.info("No vehicles logged in `traffic.db` yet.")
-
-# TAB 3: TARGET VEHICLE SEARCH ENGINE
-with tab3:
-    st.subheader("🔍 Target Vehicle Audit Trail Search Engine")
-    query_plate = st.text_input(
-        "Enter full or partial license plate number (e.g., TS09, WILDFILMS):", key="search_engine_input"
-    ).upper().strip()
-
-    if query_plate and not df.empty:
-        search_results = df[
-            df["plate_number"].astype(str).str.contains(query_plate, case=False, na=False)
-        ]
-        if not search_results.empty:
-            st.success(f"Found {len(search_results)} detection record(s) matching '{query_plate}'.")
+        col_db1, col_db2 = st.columns([0.6, 0.4])
+        with col_db1:
+            st.markdown("##### 📋 Complete Vehicle Log Table")
             st.dataframe(
-                search_results[["id", "timestamp", "camera_id", "plate_number"]],
+                df[["id", "timestamp", "camera_id", "plate_number"]],
                 use_container_width=True,
                 hide_index=True,
             )
-        else:
-            st.warning(f"No records in database matching '{query_plate}'.")
-    elif df.empty:
-        st.info("Vehicle log database is currently empty.")
+        with col_db2:
+            st.markdown("##### 📈 Camera Detections Breakdown")
+            cam_counts = df["camera_id"].value_counts().reset_index()
+            cam_counts.columns = ["Camera Node", "Detections"]
+            st.bar_chart(data=cam_counts.set_index("Camera Node"))
     else:
-        st.info("Enter a plate number above to query the complete database audit trail.")
+        st.info("No logs present in database.")
+
+# TAB 3: CAMERA SPECIFICATIONS
+with tab3:
+    st.subheader("📷 Deployed Camera Hardware & Node Specifications")
+    cam_spec_list = []
+    for cid, spec in CAMERA_NODES.items():
+        cam_spec_list.append(
+            {
+                "Camera ID": cid,
+                "Location": spec["location"],
+                "Hardware Model": spec["model"],
+                "Video Stream Resolution": spec["resolution"],
+                "Frame Rate": spec["fps"],
+                "GPS Coordinates": f"{spec['coords'][0]}, {spec['coords'][1]}",
+            }
+        )
+    st.dataframe(pd.DataFrame(cam_spec_list), use_container_width=True, hide_index=True)
 
 # TAB 4: COLLISION HISTORY
 with tab4:
-    st.subheader("Incident & Collision Audit History")
+    st.subheader("🚨 Incident & Collision Audit History")
     if not acc_history_df.empty:
         st.dataframe(
             acc_history_df[["id", "timestamp", "camera_id", "location", "severity", "status"]],
@@ -377,7 +386,7 @@ with tab4:
 
 # TAB 5: WATCHLIST HISTORY
 with tab5:
-    st.subheader("Watchlist Detections Log")
+    st.subheader("⚠️ Watchlist Detections Log")
     if not watchlist_matches.empty:
         st.dataframe(
             watchlist_matches[["timestamp", "camera_id", "plate_number", "reason"]],
