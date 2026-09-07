@@ -70,6 +70,20 @@ CREATE TABLE IF NOT EXISTS dismissed_alerts (
 )
 """
 )
+cursor.execute(
+    """
+CREATE TABLE IF NOT EXISTS e_challans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    challan_no TEXT UNIQUE,
+    plate_number TEXT,
+    violation_type TEXT,
+    fine_amount INTEGER,
+    camera_id TEXT,
+    timestamp TEXT,
+    status TEXT
+)
+"""
+)
 conn.commit()
 conn.close()
 
@@ -96,6 +110,16 @@ CAMERA_NODES = {
         "fps": "30 FPS",
         "model": "Bosch DINION IP starlight 8000",
     },
+}
+
+# Fine Structure for All 6 Target Violations
+FINE_AMOUNTS = {
+    "Wrong-Route / One-Way Driving": 2000,
+    "Red Light Signal Jumping": 1500,
+    "Triple Riding": 1000,
+    "No Helmet Riding": 500,
+    "Stolen / Hotlist Vehicle": 2500,
+    "Stop-Line Encroachment": 500,
 }
 
 # 4. Sidebar: Police Hotlist Portal & Active Registry
@@ -247,13 +271,14 @@ m3.metric("Critical Collisions", len(accident_df), delta_color="inverse")
 m4.metric("Hotlist Hits", len(watchlist_matches), "↑ Matches Logged")
 
 # 7. Navigation Tabs
-tab1, tab2, tab3, tab4, tab5 = st.tabs(
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
     [
         "🗺️ Live Trajectory Map",
         "📊 Database Analysis",
         "📷 Camera Specifications",
         "🚨 Collision History",
         "⚠️ Watchlist History",
+        "📜 E-Challan Generator",
     ]
 )
 
@@ -429,3 +454,99 @@ with tab5:
             )
         else:
             st.info("No completed or dismissed watchlist history found.")
+
+# TAB 6: 6-VIOLATION AUTOMATED E-CHALLAN GENERATOR
+with tab6:
+    st.subheader("📜 E-Challan System — Target Traffic Violation Portal")
+
+    col_ch1, col_ch2 = st.columns([0.45, 0.55])
+
+    with col_ch1:
+        st.markdown("##### 📝 Issue Traffic Violation E-Challan")
+
+        if not df.empty:
+            available_plates = df["plate_number"].unique().tolist()
+            selected_plate = st.selectbox("Select Target Vehicle Plate:", available_plates)
+
+            # Fetch latest log entry for this vehicle
+            plate_record = df[df["plate_number"] == selected_plate].iloc[0]
+
+            # Auto-suggest Hotlist offense if the vehicle is on the Police Watchlist
+            is_hotlist = not watchlist_matches.empty and selected_plate in watchlist_matches["plate_number"].values
+            default_index = 4 if is_hotlist else 0
+
+            selected_violation = st.selectbox(
+                "Select Verified Violation Category:",
+                [
+                    "Wrong-Route / One-Way Driving",
+                    "Red Light Signal Jumping",
+                    "Triple Riding",
+                    "No Helmet Riding",
+                    "Stolen / Hotlist Vehicle",
+                    "Stop-Line Encroachment",
+                ],
+                index=default_index
+            )
+
+            calculated_fine = FINE_AMOUNTS[selected_violation]
+            
+            if is_hotlist and selected_violation == "Stolen / Hotlist Vehicle":
+                st.warning("⚠️ **POLICE WATCHLIST MATCH:** Vehicle flagged in Police Hotlist Registry.")
+            
+            st.error(f"💵 **Applicable Penalty Fine:** ₹{calculated_fine}")
+
+            if st.button("🚨 Issue Official E-Challan Ticket", use_container_width=True):
+                import random
+                challan_num = f"TS-CHALLAN-{random.randint(100000, 999999)}"
+
+                c_ch = get_db_connection()
+                cur_ch = c_ch.cursor()
+                try:
+                    cur_ch.execute(
+                        """
+                        INSERT INTO e_challans (challan_no, plate_number, violation_type, fine_amount, camera_id, timestamp, status)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            challan_num,
+                            selected_plate,
+                            selected_violation,
+                            calculated_fine,
+                            plate_record["camera_id"],
+                            plate_record["timestamp"],
+                            "UNPAID",
+                        ),
+                    )
+                    c_ch.commit()
+                    st.success(f"✅ Issued E-Challan `{challan_num}` for Vehicle `{selected_plate}`!")
+                except sqlite3.IntegrityError:
+                    st.warning("A ticket with this reference ID already exists.")
+                finally:
+                    c_ch.close()
+                st.rerun()
+        else:
+            st.info("No vehicle logs present in database to issue tickets.")
+
+    with col_ch2:
+        st.markdown("##### 📋 Issued E-Challans Registry")
+        conn_ch = get_db_connection()
+        challans_df = pd.read_sql_query("SELECT * FROM e_challans ORDER BY id DESC", conn_ch)
+        conn_ch.close()
+
+        if not challans_df.empty:
+            st.dataframe(
+                challans_df[
+                    [
+                        "challan_no",
+                        "plate_number",
+                        "violation_type",
+                        "fine_amount",
+                        "camera_id",
+                        "status",
+                    ]
+                ],
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.info("No e-challans issued yet.")
