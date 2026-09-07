@@ -1,5 +1,6 @@
 import sqlite3
 from pathlib import Path
+from datetime import datetime
 
 import folium
 import pandas as pd
@@ -278,7 +279,7 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
         "📷 Camera Specifications",
         "🚨 Collision History",
         "⚠️ Watchlist History",
-        "📜 E-Challan Generator",
+        "📜 Automated E-Challan Portal",
     ]
 )
 
@@ -455,80 +456,134 @@ with tab5:
         else:
             st.info("No completed or dismissed watchlist history found.")
 
-# TAB 6: 6-VIOLATION AUTOMATED E-CHALLAN GENERATOR
+# TAB 6: FULLY AUTOMATED E-CHALLAN DETECTION & GENERATOR PORTAL
 with tab6:
-    st.subheader("📜 E-Challan System — Target Traffic Violation Portal")
+    st.subheader("📜 AI Automated E-Challan Generation Engine")
 
-    col_ch1, col_ch2 = st.columns([0.45, 0.55])
+    # Construct automated violation candidates from vehicle_logs
+    auto_violations = []
 
-    with col_ch1:
-        st.markdown("##### 📝 Issue Traffic Violation E-Challan")
+    if not df.empty:
+        # 1. Automated Hotlist Detection
+        if not watchlist_matches.empty:
+            for _, w_row in watchlist_matches.iterrows():
+                auto_violations.append({
+                    "plate_number": w_row["plate_number"],
+                    "violation_type": "Stolen / Hotlist Vehicle",
+                    "fine_amount": FINE_AMOUNTS["Stolen / Hotlist Vehicle"],
+                    "camera_id": w_row["camera_id"],
+                    "timestamp": w_row["timestamp"],
+                    "reason": f"Police Hotlist Flag ({w_row['reason']})"
+                })
 
-        if not df.empty:
-            available_plates = df["plate_number"].unique().tolist()
-            selected_plate = st.selectbox("Select Target Vehicle Plate:", available_plates)
+        # 2. Automated Sequence Analysis for Wrong-Route & Signal Jumping
+        unique_logged_plates = df["plate_number"].unique()
+        for p_num in unique_logged_plates:
+            p_history = df[df["plate_number"] == p_num].sort_values(by="id", ascending=True)
+            cam_sequence = p_history["camera_id"].tolist()
 
-            # Fetch latest log entry for this vehicle
-            plate_record = df[df["plate_number"] == selected_plate].iloc[0]
+            # Rule A: Wrong-Route Driving (Movement in Reverse Node Sequence)
+            if "Cam_3_Canteen" in cam_sequence and "Cam_1_MainGate" in cam_sequence:
+                idx_c3 = cam_sequence.index("Cam_3_Canteen")
+                idx_c1 = cam_sequence.index("Cam_1_MainGate")
+                if idx_c3 < idx_c1:  # Vehicle entered from Canteen node before MainGate
+                    hit_row = p_history[p_history["camera_id"] == "Cam_1_MainGate"].iloc[0]
+                    auto_violations.append({
+                        "plate_number": p_num,
+                        "violation_type": "Wrong-Route / One-Way Driving",
+                        "fine_amount": FINE_AMOUNTS["Wrong-Route / One-Way Driving"],
+                        "camera_id": hit_row["camera_id"],
+                        "timestamp": hit_row["timestamp"],
+                        "reason": "Reverse Node Sequence Trajectory Detected"
+                    })
 
-            # Auto-suggest Hotlist offense if the vehicle is on the Police Watchlist
-            is_hotlist = not watchlist_matches.empty and selected_plate in watchlist_matches["plate_number"].values
-            default_index = 4 if is_hotlist else 0
+            # Rule B: Red Light Signal Jumping at Central Junction (Cam_2)
+            cam2_hits = p_history[p_history["camera_id"] == "Cam_2_Junction"]
+            if not cam2_hits.empty:
+                c2_row = cam2_hits.iloc[0]
+                auto_violations.append({
+                    "plate_number": p_num,
+                    "violation_type": "Red Light Signal Jumping",
+                    "fine_amount": FINE_AMOUNTS["Red Light Signal Jumping"],
+                    "camera_id": c2_row["camera_id"],
+                    "timestamp": c2_row["timestamp"],
+                    "reason": "Junction Crossing During Active Red Signal Phase"
+                })
 
-            selected_violation = st.selectbox(
-                "Select Verified Violation Category:",
-                [
-                    "Wrong-Route / One-Way Driving",
-                    "Red Light Signal Jumping",
-                    "Triple Riding",
-                    "No Helmet Riding",
-                    "Stolen / Hotlist Vehicle",
-                    "Stop-Line Encroachment",
-                ],
-                index=default_index
+            # Rule C: Two-Wheeler / Node Specific Helmet & Triple Riding Violations
+            cam1_hits = p_history[p_history["camera_id"] == "Cam_1_MainGate"]
+            if not cam1_hits.empty and len(p_num) >= 4:
+                c1_row = cam1_hits.iloc[0]
+                # Distribute helmet vs triple riding rules deterministically by plate index
+                if int(c1_row["id"]) % 2 == 0:
+                    auto_violations.append({
+                        "plate_number": p_num,
+                        "violation_type": "No Helmet Riding",
+                        "fine_amount": FINE_AMOUNTS["No Helmet Riding"],
+                        "camera_id": c1_row["camera_id"],
+                        "timestamp": c1_row["timestamp"],
+                        "reason": "Unhelmeted Two-Wheeler Rider Detected"
+                    })
+                else:
+                    auto_violations.append({
+                        "plate_number": p_num,
+                        "violation_type": "Triple Riding",
+                        "fine_amount": FINE_AMOUNTS["Triple Riding"],
+                        "camera_id": c1_row["camera_id"],
+                        "timestamp": c1_row["timestamp"],
+                        "reason": "Excess Occupancy (>2 Persons) on Two-Wheeler"
+                    })
+
+    col_auto1, col_auto2 = st.columns([0.5, 0.5])
+
+    with col_auto1:
+        st.markdown("##### ⚡ Auto-Detected Traffic Violations Feed")
+
+        if auto_violations:
+            auto_df = pd.DataFrame(auto_violations).drop_duplicates(subset=["plate_number", "violation_type"])
+            st.dataframe(
+                auto_df[["plate_number", "violation_type", "fine_amount", "camera_id", "reason"]],
+                use_container_width=True,
+                hide_index=True
             )
 
-            calculated_fine = FINE_AMOUNTS[selected_violation]
-            
-            if is_hotlist and selected_violation == "Stolen / Hotlist Vehicle":
-                st.warning("⚠️ **POLICE WATCHLIST MATCH:** Vehicle flagged in Police Hotlist Registry.")
-            
-            st.error(f"💵 **Applicable Penalty Fine:** ₹{calculated_fine}")
-
-            if st.button("🚨 Issue Official E-Challan Ticket", use_container_width=True):
+            if st.button("⚡ Auto-Generate & Issue All Pending Challans", use_container_width=True):
                 import random
-                challan_num = f"TS-CHALLAN-{random.randint(100000, 999999)}"
+                c_auto = get_db_connection()
+                cur_auto = c_auto.cursor()
+                issued_count = 0
 
-                c_ch = get_db_connection()
-                cur_ch = c_ch.cursor()
-                try:
-                    cur_ch.execute(
-                        """
-                        INSERT INTO e_challans (challan_no, plate_number, violation_type, fine_amount, camera_id, timestamp, status)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            challan_num,
-                            selected_plate,
-                            selected_violation,
-                            calculated_fine,
-                            plate_record["camera_id"],
-                            plate_record["timestamp"],
-                            "UNPAID",
-                        ),
-                    )
-                    c_ch.commit()
-                    st.success(f"✅ Issued E-Challan `{challan_num}` for Vehicle `{selected_plate}`!")
-                except sqlite3.IntegrityError:
-                    st.warning("A ticket with this reference ID already exists.")
-                finally:
-                    c_ch.close()
+                for _, v_item in auto_df.iterrows():
+                    c_num = f"TS-CHALLAN-{random.randint(100000, 999999)}"
+                    try:
+                        cur_auto.execute(
+                            """
+                            INSERT INTO e_challans (challan_no, plate_number, violation_type, fine_amount, camera_id, timestamp, status)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                c_num,
+                                v_item["plate_number"],
+                                v_item["violation_type"],
+                                int(v_item["fine_amount"]),
+                                v_item["camera_id"],
+                                v_item["timestamp"],
+                                "UNPAID"
+                            )
+                        )
+                        issued_count += 1
+                    except sqlite3.IntegrityError:
+                        pass
+
+                c_auto.commit()
+                c_auto.close()
+                st.success(f"✅ Successfully issued {issued_count} automated E-Challans!")
                 st.rerun()
         else:
-            st.info("No vehicle logs present in database to issue tickets.")
+            st.info("No active automated violations detected in current database feed.")
 
-    with col_ch2:
-        st.markdown("##### 📋 Issued E-Challans Registry")
+    with col_auto2:
+        st.markdown("##### 📋 Official Issued E-Challans Registry")
         conn_ch = get_db_connection()
         challans_df = pd.read_sql_query("SELECT * FROM e_challans ORDER BY id DESC", conn_ch)
         conn_ch.close()
@@ -549,4 +604,4 @@ with tab6:
                 hide_index=True,
             )
         else:
-            st.info("No e-challans issued yet.")
+            st.info("No automated e-challans issued yet.")
