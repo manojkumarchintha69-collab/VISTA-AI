@@ -1,29 +1,30 @@
 import os
 import sqlite3
 import time
+import math
 import cv2
+import numpy as np
 import easyocr
 from ultralytics import YOLO
 
+# ---------------------------------------------------------
 # 1. Setup Database and Tables
+# ---------------------------------------------------------
 conn = sqlite3.connect("traffic.db")
 cursor = conn.cursor()
 
 # Table for License Plate & Vehicle Logs
-cursor.execute(
-    """
+cursor.execute("""
 CREATE TABLE IF NOT EXISTS vehicle_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp TEXT,
     camera_id TEXT,
     plate_number TEXT
 )
-"""
-)
+""")
 
 # Table for Critical Incident & Accident Alerts
-cursor.execute(
-    """
+cursor.execute("""
 CREATE TABLE IF NOT EXISTS accident_alerts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp TEXT,
@@ -32,39 +33,150 @@ CREATE TABLE IF NOT EXISTS accident_alerts (
     severity TEXT,
     status TEXT
 )
-"""
-)
+""")
 
 # Table for Police Watchlist
-cursor.execute(
-    """
+cursor.execute("""
 CREATE TABLE IF NOT EXISTS watchlist (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     plate_number TEXT UNIQUE,
     reason TEXT,
     added_at TEXT
 )
-"""
+""")
+
+# Table for Real-World Computer Vision Auto Violations
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS auto_violations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT,
+    camera_id TEXT,
+    plate_number TEXT,
+    violation_type TEXT,
+    fine_amount INTEGER,
+    reason TEXT
 )
+""")
 conn.commit()
 
-# 2. Initialize Models
-print("🚀 Initializing YOLOv8 and EasyOCR...")
+# Fine Amounts Reference Map
+FINE_AMOUNTS = {
+    "Red Light Signal Jumping": 1500,
+    "No Helmet Riding": 500,
+    "Triple Riding": 1000,
+    "Wrong-Route / One-Way Driving": 2000
+}
+
+# ---------------------------------------------------------
+# 2. Real-World Helper Functions
+# ---------------------------------------------------------
+
+def check_red_light_signal_jump(frame, light_roi_coords, vehicle_bottom_y, stop_line_y):
+    """
+    1. Crops physical traffic light ROI and detects RED LED state via HSV color mask.
+    2. Checks if vehicle bottom y-coordinate crosses the painted virtual stop line.
+    """
+    if light_roi_coords is None:
+        return False, "GREEN"
+        
+    x1, y1, x2, y2 = light_roi_coords
+    light_crop = frame[y1:y2, x1:x2]
+    
+    if light_crop.size == 0:
+        return False, "GREEN"
+
+    hsv = cv2.cvtColor(light_crop, cv2.COLOR_BGR2HSV)
+    lower_red1 = np.array([0, 100, 100])
+    upper_red1 = np.array([10, 255, 255])
+    lower_red2 = np.array([160, 100, 100])
+    upper_red2 = np.array([180, 255, 255])
+
+    mask = cv2.inRange(hsv, lower_red1, upper_red1) + cv2.inRange(hsv, lower_red2, upper_red2)
+    is_red = np.sum(mask > 0) > 40
+    signal_status = "RED" if is_red else "GREEN"
+
+    is_violation = is_red and (vehicle_bottom_y > stop_line_y)
+    return is_violation, signal_status
+
+
+def analyze_rider_safety(frame, bike_box, person_model):
+    """
+    Isolates motorcycle ROI to count riders (Triple Riding) and checks upper head ROI for helmet presence.
+    """
+    bx1, by1, bx2, by2 = bike_box
+    bike_crop = frame[by1:by2, bx1:bx2]
+    
+    if bike_crop.size == 0:
+        return False, False
+
+    person_results = person_model(bike_crop, verbose=False)
+    rider_boxes = person_results[0].boxes if person_results else []
+    rider_count = len(rider_boxes)
+
+    is_triple_riding = rider_count > 2
+    is_no_helmet = False
+
+    for pbox in rider_boxes:
+        px1, py1, px2, py2 = map(int, pbox.xyxy[0])
+        head_crop = bike_crop[py1:int(py1 + (py2 - py1) * 0.35), px1:px2]
+        
+        if head_crop.size > 0:
+            gray_head = cv2.cvtColor(head_crop, cv2.COLOR_BGR2GRAY)
+            if cv2.Laplacian(gray_head, cv2.CV_64F).var() < 90.0:
+                is_no_helmet = True
+
+    return is_triple_riding, is_no_helmet
+
+
+def check_wrong_way_vector(prev_centroid, curr_centroid, allowed_angle_range=(0, 180)):
+    """
+    Calculates movement trajectory vector angle theta between frame centroids.
+    Flags wrong-way driving if motion vector strays outside authorized directional lane angles.
+    """
+    dx = curr_centroid[0] - prev_centroid[0]
+    dy = curr_centroid[1] - prev_centroid[1]
+
+    if math.hypot(dx, dy) < 5:  # Ignore near-stationary noise
+        return False
+
+    movement_angle = math.degrees(math.atan2(-dy, dx)) % 360
+    min_angle, max_angle = allowed_angle_range
+
+    return not (min_angle <= movement_angle <= max_angle)
+
+
+def log_violation_to_db(timestamp, camera_id, plate_number, v_type, reason):
+    """Logs auto-detected computer vision violations into SQLite."""
+    cursor.execute("""
+    INSERT INTO auto_violations (timestamp, camera_id, plate_number, violation_type, fine_amount, reason)
+    VALUES (?, ?, ?, ?, ?, ?)
+    """, (timestamp, camera_id, plate_number, v_type, FINE_AMOUNTS[v_type], reason))
+    conn.commit()
+    print(f"  🚨 [AUTO-VIOLATION DETECTED] {camera_id} @ {timestamp} ➔ {plate_number} | {v_type} ({reason})")
+
+
+# ---------------------------------------------------------
+# 3. Initialize Models & Tracking Buffers
+# ---------------------------------------------------------
+print("🚀 Initializing YOLOv8 and EasyOCR Engine...")
 model = YOLO("yolov8n.pt")
 reader = easyocr.Reader(["en"], gpu=False)
 
-# 3. List of split camera feeds
+# Tracking dictionary for vehicle motion centroids across frames
+previous_centroids = {}
+
 camera_files = [
     ("Cam_1_MainGate", "cam1.mp4"),
     ("Cam_2_Junction", "cam2.mp4"),
     ("Cam_3_Canteen", "cam3.mp4"),
 ]
 
+# ---------------------------------------------------------
+# 4. Processing Multi-Camera Video Streams
+# ---------------------------------------------------------
 for cam_id, video_file in camera_files:
     if not os.path.exists(video_file):
-        print(
-            f"⚠️ Skipping {video_file} - File not found! Make sure video clips are in this folder."
-        )
+        print(f"⚠️ Skipping {video_file} - File not found!")
         continue
 
     print(f"\n🎥 Processing Stream: {cam_id} ({video_file})...")
@@ -78,12 +190,13 @@ for cam_id, video_file in camera_files:
 
         frame_nmr += 1
 
-        # 🚨 ACCIDENT DETECTION ENGINE (Triggered on Cam_3_Canteen)
+        # ---------------------------------------------------------
+        # ACCIDENT DETECTION ENGINE (Cam_3_Canteen)
+        # ---------------------------------------------------------
         if cam_id == "Cam_3_Canteen" and frame_nmr >= 5:
             current_time = time.strftime("%Y-%m-%d %H:%M:%S")
             location_name = "North Gate Signal (Barkatpura)"
 
-            # Check if an unresolved alert already exists
             cursor.execute(
                 "SELECT * FROM accident_alerts WHERE camera_id = ? AND status != 'RESOLVED'",
                 (cam_id,),
@@ -98,18 +211,12 @@ for cam_id, video_file in camera_files:
                 )
                 conn.commit()
 
-                print(
-                    f"\n🚨 ACCIDENT DETECTED at {cam_id} ({location_name}) on {current_time}"
-                )
+                print(f"\n🚨 ACCIDENT DETECTED at {cam_id} ({location_name}) on {current_time}")
                 print("📱 Sending Automated Alerts:")
-                print(
-                    "   ↳ 🚑 108 Emergency Medical Services Notification Transmitted."
-                )
-                print(
-                    "   ↳ 🚔 Police Control Room (100/112) Dispatch Transmitted.\n"
-                )
+                print("   ↳ 🚑 108 Emergency Medical Services Notification Transmitted.")
+                print("   ↳ 🚔 Police Control Room (100/112) Dispatch Transmitted.\n")
 
-        # Process 1 frame out of 5 for vehicle plate OCR
+        # Process alternate frames for performance efficiency
         if frame_nmr % 2 != 0:
             continue
 
@@ -117,22 +224,23 @@ for cam_id, video_file in camera_files:
 
         for r in results:
             for box in r.boxes:
+                cls_id = int(box.cls[0])
+
                 # Class 2 = Car, 3 = Motorcycle, 7 = Truck
-                if int(box.cls[0]) in [2, 3, 7]:
+                if cls_id in [2, 3, 7]:
                     x1, y1, x2, y2 = map(int, box.xyxy[0])
                     crop = frame[y1:y2, x1:x2]
+                    curr_centroid = ((x1 + x2) // 2, (y1 + y2) // 2)
 
                     try:
                         ocr_res = reader.readtext(crop, detail=0)
                         if ocr_res:
-                            plate_text = "".join(
-                                e for e in ocr_res[0] if e.isalnum()
-                            ).upper()
+                            plate_text = "".join(e for e in ocr_res[0] if e.isalnum()).upper()
 
                             if len(plate_text) >= 4:
                                 log_time = time.strftime("%H:%M:%S")
 
-                                # Skip redundant logging for the same plate on the same camera pass
+                                # Check and log unique plate entry
                                 cursor.execute(
                                     "SELECT * FROM vehicle_logs WHERE camera_id = ? AND plate_number = ? ORDER BY id DESC LIMIT 1",
                                     (cam_id, plate_text),
@@ -143,13 +251,44 @@ for cam_id, video_file in camera_files:
                                         (log_time, cam_id, plate_text),
                                     )
                                     conn.commit()
-                                    print(
-                                        f"  [LOGGED ONCE] {cam_id} @ {log_time} ➔ Vehicle: {plate_text}"
+                                    print(f"  [LOGGED ONCE] {cam_id} @ {log_time} ➔ Vehicle: {plate_text}")
+
+                                # ---------------------------------------------------------
+                                # REAL-WORLD COMPUTER VISION VIOLATION EVALUATION
+                                # ---------------------------------------------------------
+
+                                # 1. Signal Jump Check (Targeted at Junction Nodes)
+                                if cam_id in ["Cam_2_Junction", "Cam_3_Canteen"]:
+                                    # Signal box ROI coords [x1, y1, x2, y2] and stop line Y coordinate
+                                    is_signal_jump, current_light = check_red_light_signal_jump(
+                                        frame, light_roi_coords=[400, 50, 450, 150], vehicle_bottom_y=y2, stop_line_y=300
                                     )
+                                    if is_signal_jump:
+                                        log_violation_to_db(log_time, cam_id, plate_text, "Red Light Signal Jumping", "Crossed Stop Line During Active RED Phase")
+
+                                # 2. Motorcycle Rider & Helmet Safety Check
+                                if cls_id == 3:  # Class 3 = Motorcycle
+                                    is_triple, is_no_helmet = analyze_rider_safety(
+                                        frame, bike_box=[x1, y1, x2, y2], person_model=model
+                                    )
+                                    if is_triple:
+                                        log_violation_to_db(log_time, cam_id, plate_text, "Triple Riding", "Occupancy Exceeds 2 Persons")
+                                    if is_no_helmet:
+                                        log_violation_to_db(log_time, cam_id, plate_text, "No Helmet Riding", "Unhelmeted Two-Wheeler Rider")
+
+                                # 3. Wrong-Way Vector Direction Tracking
+                                if plate_text in previous_centroids:
+                                    prev_centroid = previous_centroids[plate_text]
+                                    if check_wrong_way_vector(prev_centroid, curr_centroid, allowed_angle_range=(0, 180)):
+                                        log_violation_to_db(log_time, cam_id, plate_text, "Wrong-Route / One-Way Driving", "Motion Vector Opposes Authorized Lane Trajectory")
+
+                                # Update stored centroid position for tracking
+                                previous_centroids[plate_text] = curr_centroid
+
                     except Exception:
                         pass
 
     cap.release()
 
 conn.close()
-print("\n✅ Detections successfully saved to 'traffic.db'!")
+print("\n✅ Detections & Real-World Auto-Violations successfully saved to 'traffic.db'!")
