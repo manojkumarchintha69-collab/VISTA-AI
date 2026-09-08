@@ -356,6 +356,7 @@ else:
     # MAIN GATEWAY SELECTION MENU
     # ---------------------------------------------------------
     # ---------------------------------------------------------
+   # ---------------------------------------------------------
     # MAIN GATEWAY SELECTION MENU
     # ---------------------------------------------------------
     if st.session_state["active_gateway"] is None:
@@ -382,30 +383,36 @@ else:
                         time.sleep(0.5)
                         st.rerun()
 
-        # ⚠️ 2. TOP-LEVEL HOTLIST VEHICLE DETECTION BANNER
+        # ⚠️ 2. TOP-LEVEL HOTLIST VEHICLE DETECTION BANNER (Deduplicated by Plate Number)
         if not active_watchlist_alerts.empty:
-            for _, wl_row in active_watchlist_alerts.iterrows():
-                l_id = int(wl_row["log_id"])
+            # Group by plate_number to grab the latest spot detection per hotlist vehicle
+            latest_wl_alerts = active_watchlist_alerts.sort_values(by="log_id", ascending=False).groupby("plate_number").first().reset_index()
+
+            for _, wl_row in latest_wl_alerts.iterrows():
                 w_plate = wl_row["plate_number"]
                 w_cam = wl_row["camera_id"]
                 w_reason = wl_row.get("reason", "Flagged Hotlist Vehicle")
                 w_time = wl_row["timestamp"]
                 w_loc = CAMERA_NODES.get(w_cam, {}).get("location", "Unknown Location")
 
+                # Collect all log IDs for this specific plate so a single click dismisses all hits
+                all_plate_log_ids = active_watchlist_alerts[active_watchlist_alerts["plate_number"] == w_plate]["log_id"].astype(int).tolist()
+
                 col_wl_text, col_wl_btn = st.columns([0.8, 0.2])
                 with col_wl_text:
-                    st.warning(f"⚠️ **HOTLIST VEHICLE DETECTED:** Flagged Plate **`{w_plate}`** ({w_reason}) spotted at **{w_cam}** ({w_loc}) at `{w_time}`!")
+                    st.warning(f"⚠️ **HOTLIST VEHICLE DETECTED:** Flagged Plate **`{w_plate}`** ({w_reason}) last spotted at **{w_cam}** ({w_loc}) at `{w_time}`! Total Detections: `{len(all_plate_log_ids)}`")
                 with col_wl_btn:
-                    if st.button(f"👁️ Dismiss Alert #{l_id}", key=f"home_wl_dismiss_{l_id}", width="stretch"):
+                    if st.button(f"👁️ Dismiss Alerts ({w_plate})", key=f"home_wl_dismiss_all_{w_plate}", width="stretch"):
                         conn_d = get_db_connection()
                         cur_d = conn_d.cursor()
-                        try:
-                            cur_d.execute("INSERT INTO dismissed_alerts (log_id) VALUES (?)", (l_id,))
-                            conn_d.commit()
-                        except sqlite3.IntegrityError:
-                            pass
+                        for lid in all_plate_log_ids:
+                            try:
+                                cur_d.execute("INSERT INTO dismissed_alerts (log_id) VALUES (?)", (lid,))
+                            except sqlite3.IntegrityError:
+                                pass
+                        conn_d.commit()
                         conn_d.close()
-                        st.success(f"Alert #{l_id} dismissed!")
+                        st.success(f"All alerts for `{w_plate}` dismissed!")
                         time.sleep(0.5)
                         st.rerun()
 
