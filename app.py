@@ -422,8 +422,7 @@ else:
         # Filter Logs for Searched Plate
         target_hits = pd.DataFrame()
         if search_plate and not df.empty:
-            target_hits = df[df["plate_number"].astype(str).str.contains(search_plate, case=False, na=False)].sort_values(by="id", ascending=True)
-
+            target_hits = df[df["plate_number"].astype(str).str.strip().str.upper() == search_plate].sort_values(by="id", ascending=True)
         # Base Map Focus (Center on searched plate's first known location, or default Hyderabad center)
         initial_center = [17.3890, 78.4910]
         if not target_hits.empty:
