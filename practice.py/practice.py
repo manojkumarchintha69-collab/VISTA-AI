@@ -5,12 +5,16 @@ import math
 import cv2
 import numpy as np
 import easyocr
+from pathlib import Path
 from ultralytics import YOLO
 
 # ---------------------------------------------------------
-# 1. Database & Table Initialization
+# 1. Path Resolution & Database Initialization
 # ---------------------------------------------------------
-conn = sqlite3.connect("traffic.db")
+BASE_DIR = Path(__file__).parent
+DB_PATH = BASE_DIR / "traffic.db"
+
+conn = sqlite3.connect(DB_PATH)
 cursor = conn.cursor()
 
 # Table for License Plate & Vehicle Logs
@@ -164,16 +168,17 @@ def log_violation_to_db(timestamp, camera_id, plate_number, v_type, reason):
 
 
 # ---------------------------------------------------------
-# 3. Model Initialization & Video Queue Setup
+# 3. Model Initialization & Dynamic Path Resolution
 # ---------------------------------------------------------
 print("🚀 Initializing YOLOv8 and EasyOCR Engine...")
 model = YOLO("yolov8n.pt")
 reader = easyocr.Reader(["en"], gpu=False)
 
+# Absolute video file resolution relative to script location
 camera_files = [
-    ("Cam_1_MainGate", "cam1.mp4"),
-    ("Cam_2_Junction", "cam2.mp4"),
-    ("Cam_3_Canteen", "cam3.mp4"),
+    ("Cam_1_MainGate", str(BASE_DIR / "cam1.mp4")),
+    ("Cam_2_Junction", str(BASE_DIR / "cam2.mp4")),
+    ("Cam_3_Canteen", str(BASE_DIR / "cam3.mp4")),
 ]
 
 # ---------------------------------------------------------
@@ -181,8 +186,13 @@ camera_files = [
 # ---------------------------------------------------------
 for cam_id, video_file in camera_files:
     if not os.path.exists(video_file):
-        print(f"⚠️ Skipping {video_file} - File not found!")
-        continue
+        # Fallback check at workspace root if video isn't inside practice.py folder
+        alt_path = Path(__file__).parent.parent / Path(video_file).name
+        if alt_path.exists():
+            video_file = str(alt_path)
+        else:
+            print(f"⚠️ Skipping {video_file} - File not found!")
+            continue
 
     # Reset centroid tracking per camera feed
     previous_centroids = {}
