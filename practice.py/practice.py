@@ -8,7 +8,7 @@ import easyocr
 from ultralytics import YOLO
 
 # ---------------------------------------------------------
-# 1. Setup Database and Tables
+# 1. Database & Table Initialization
 # ---------------------------------------------------------
 conn = sqlite3.connect("traffic.db")
 cursor = conn.cursor()
@@ -57,9 +57,23 @@ CREATE TABLE IF NOT EXISTS auto_violations (
     reason TEXT
 )
 """)
+
+# Table for Issued Official E-Challans
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS e_challans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    challan_no TEXT UNIQUE,
+    plate_number TEXT,
+    violation_type TEXT,
+    fine_amount INTEGER,
+    camera_id TEXT,
+    timestamp TEXT,
+    status TEXT
+)
+""")
 conn.commit()
 
-# Fine Amounts Reference Map
+# Fine Amounts Mapping
 FINE_AMOUNTS = {
     "Red Light Signal Jumping": 1500,
     "No Helmet Riding": 500,
@@ -67,14 +81,21 @@ FINE_AMOUNTS = {
     "Wrong-Route / One-Way Driving": 2000
 }
 
+# Camera Directional Vectors Calibration (in degrees)
+CAM_DIRECTION_ANGLES = {
+    "Cam_1_MainGate": (0, 360),     # Bi-directional gate flow (prevents false alerts)
+    "Cam_2_Junction": (180, 360),   # Downward traffic flow
+    "Cam_3_Canteen": (0, 270)       # Transverse one-way flow
+}
+
 # ---------------------------------------------------------
-# 2. Real-World Helper Functions
+# 2. Real-World Computer Vision Detection Engines
 # ---------------------------------------------------------
 
 def check_red_light_signal_jump(frame, light_roi_coords, vehicle_bottom_y, stop_line_y):
     """
-    1. Crops physical traffic light ROI and detects RED LED state via HSV color mask.
-    2. Checks if vehicle bottom y-coordinate crosses the painted virtual stop line.
+    1. Crops traffic signal ROI and detects RED LED state via HSV thresholding.
+    2. Checks if vehicle bottom y-coordinate crosses virtual stop line during active RED phase.
     """
     if light_roi_coords is None:
         return False, "GREEN"
@@ -109,20 +130,40 @@ def analyze_rider_safety(frame, bike_box, person_model):
     if bike_crop.size == 0:
         return False, False
 
+    # Run YOLO pass on bike crop
     person_results = person_model(bike_crop, verbose=False)
-    rider_boxes = person_results[0].boxes if person_results else []
-    rider_count = len(rider_boxes)
+    
+    # 1. Strictly filter for COCO Class 0 (Person / Rider)
+    rider_boxes = []
+    if person_results and len(person_results[0].boxes) > 0:
+        for box in person_results[0].boxes:
+            if int(box.cls[0]) == 0:  # Class 0 = Person
+                rider_boxes.append(box)
 
+    rider_count = len(rider_boxes)
     is_triple_riding = rider_count > 2
     is_no_helmet = False
 
+    # 2. Analyze head region of each detected rider
     for pbox in rider_boxes:
         px1, py1, px2, py2 = map(int, pbox.xyxy[0])
-        head_crop = bike_crop[py1:int(py1 + (py2 - py1) * 0.35), px1:px2]
+        
+        # Crop top 30% region representing the head
+        head_crop = bike_crop[max(0, py1):min(bike_crop.shape[0], py1 + int((py2 - py1) * 0.30)), max(0, px1):min(bike_crop.shape[1], px2)]
         
         if head_crop.size > 0:
-            gray_head = cv2.cvtColor(head_crop, cv2.COLOR_BGR2GRAY)
-            if cv2.Laplacian(gray_head, cv2.CV_64F).var() < 90.0:
+            # Convert to HSV to analyze skin tones vs. solid helmet surfaces
+            hsv_head = cv2.cvtColor(head_crop, cv2.COLOR_BGR2HSV)
+            
+            # Skin color mask in HSV (detects bare head/face exposure)
+            lower_skin = np.array([0, 20, 70], dtype=np.uint8)
+            upper_skin = np.array([20, 255, 255], dtype=np.uint8)
+            skin_mask = cv2.inRange(hsv_head, lower_skin, upper_skin)
+            
+            skin_pixel_ratio = np.sum(skin_mask > 0) / (head_crop.shape[0] * head_crop.shape[1])
+            
+            # If skin/hair area in top head region exceeds 15%, flag as No Helmet
+            if skin_pixel_ratio > 0.15:
                 is_no_helmet = True
 
     return is_triple_riding, is_no_helmet
@@ -136,7 +177,7 @@ def check_wrong_way_vector(prev_centroid, curr_centroid, allowed_angle_range=(0,
     dx = curr_centroid[0] - prev_centroid[0]
     dy = curr_centroid[1] - prev_centroid[1]
 
-    if math.hypot(dx, dy) < 5:  # Ignore near-stationary noise
+    if math.hypot(dx, dy) < 5:  # Ignore stationary noise
         return False
 
     movement_angle = math.degrees(math.atan2(-dy, dx)) % 360
@@ -154,16 +195,12 @@ def log_violation_to_db(timestamp, camera_id, plate_number, v_type, reason):
     conn.commit()
     print(f"  🚨 [AUTO-VIOLATION DETECTED] {camera_id} @ {timestamp} ➔ {plate_number} | {v_type} ({reason})")
 
-
 # ---------------------------------------------------------
-# 3. Initialize Models & Tracking Buffers
+# 3. Model Initialization & Video Queue Setup
 # ---------------------------------------------------------
 print("🚀 Initializing YOLOv8 and EasyOCR Engine...")
 model = YOLO("yolov8n.pt")
 reader = easyocr.Reader(["en"], gpu=False)
-
-# Tracking dictionary for vehicle motion centroids across frames
-previous_centroids = {}
 
 camera_files = [
     ("Cam_1_MainGate", "cam1.mp4"),
@@ -179,6 +216,9 @@ for cam_id, video_file in camera_files:
         print(f"⚠️ Skipping {video_file} - File not found!")
         continue
 
+    # RESET centroid tracker per camera feed to prevent cross-camera vector jumps
+    previous_centroids = {}
+
     print(f"\n🎥 Processing Stream: {cam_id} ({video_file})...")
     cap = cv2.VideoCapture(video_file)
     frame_nmr = 0
@@ -190,9 +230,7 @@ for cam_id, video_file in camera_files:
 
         frame_nmr += 1
 
-        # ---------------------------------------------------------
-        # ACCIDENT DETECTION ENGINE (Cam_3_Canteen)
-        # ---------------------------------------------------------
+        # Incident Alert Engine (Cam_3_Canteen)
         if cam_id == "Cam_3_Canteen" and frame_nmr >= 5:
             current_time = time.strftime("%Y-%m-%d %H:%M:%S")
             location_name = "North Gate Signal (Barkatpura)"
@@ -232,6 +270,10 @@ for cam_id, video_file in camera_files:
                     crop = frame[y1:y2, x1:x2]
                     curr_centroid = ((x1 + x2) // 2, (y1 + y2) // 2)
 
+                    # Filter tiny or distant crops to maintain fast CPU inference
+                    if crop.shape[0] < 25 or crop.shape[1] < 50:
+                        continue
+
                     try:
                         ocr_res = reader.readtext(crop, detail=0)
                         if ocr_res:
@@ -259,7 +301,6 @@ for cam_id, video_file in camera_files:
 
                                 # 1. Signal Jump Check (Targeted at Junction Nodes)
                                 if cam_id in ["Cam_2_Junction", "Cam_3_Canteen"]:
-                                    # Signal box ROI coords [x1, y1, x2, y2] and stop line Y coordinate
                                     is_signal_jump, current_light = check_red_light_signal_jump(
                                         frame, light_roi_coords=[400, 50, 450, 150], vehicle_bottom_y=y2, stop_line_y=300
                                     )
@@ -276,13 +317,14 @@ for cam_id, video_file in camera_files:
                                     if is_no_helmet:
                                         log_violation_to_db(log_time, cam_id, plate_text, "No Helmet Riding", "Unhelmeted Two-Wheeler Rider")
 
-                                # 3. Wrong-Way Vector Direction Tracking
+                                # 3. Wrong-Way Vector Direction Tracking (Calibrated per node)
                                 if plate_text in previous_centroids:
                                     prev_centroid = previous_centroids[plate_text]
-                                    if check_wrong_way_vector(prev_centroid, curr_centroid, allowed_angle_range=(0, 180)):
+                                    allowed_range = CAM_DIRECTION_ANGLES.get(cam_id, (0, 360))
+
+                                    if check_wrong_way_vector(prev_centroid, curr_centroid, allowed_angle_range=allowed_range):
                                         log_violation_to_db(log_time, cam_id, plate_text, "Wrong-Route / One-Way Driving", "Motion Vector Opposes Authorized Lane Trajectory")
 
-                                # Update stored centroid position for tracking
                                 previous_centroids[plate_text] = curr_centroid
 
                     except Exception:
