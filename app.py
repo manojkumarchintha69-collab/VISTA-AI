@@ -355,24 +355,22 @@ else:
     # ---------------------------------------------------------
     # MAIN GATEWAY SELECTION MENU
     # ---------------------------------------------------------
+    # ---------------------------------------------------------
+    # MAIN GATEWAY SELECTION MENU
+    # ---------------------------------------------------------
     if st.session_state["active_gateway"] is None:
         
-        # 🚨 TOP-LEVEL ACCIDENT ALERT BANNER WITH INLINE RESOLVE BUTTON
+        # 🚨 1. TOP-LEVEL ACCIDENT ALERT BANNER
         if not accident_df.empty:
             for _, crash_row in accident_df.iterrows():
                 c_id = int(crash_row["id"])
                 c_cam = crash_row["camera_id"]
                 c_loc = crash_row.get("location", CAMERA_NODES.get(c_cam, {}).get("location", "Unknown Location"))
                 c_time = crash_row["timestamp"]
-                c_sev = crash_row.get("severity", "CRITICAL")
 
                 col_banner_text, col_banner_btn = st.columns([0.8, 0.2])
-                
                 with col_banner_text:
-                    st.error(
-                        f"🚨 **CRITICAL INCIDENT DETECTED:** Collision alert triggered at **{c_cam}** ({c_loc}) at `{c_time}`! Emergency units notified."
-                    )
-                
+                    st.error(f"🚨 **CRITICAL COLLISION DETECTED:** Incident triggered at **{c_cam}** ({c_loc}) at `{c_time}`! Emergency units notified.")
                 with col_banner_btn:
                     if st.button(f"✅ Resolve #{c_id}", key=f"home_resolve_btn_{c_id}", width="stretch", type="primary"):
                         conn_res = get_db_connection()
@@ -383,11 +381,40 @@ else:
                         st.success(f"Incident #{c_id} resolved!")
                         time.sleep(0.5)
                         st.rerun()
+
+        # ⚠️ 2. TOP-LEVEL HOTLIST VEHICLE DETECTION BANNER
+        if not active_watchlist_alerts.empty:
+            for _, wl_row in active_watchlist_alerts.iterrows():
+                l_id = int(wl_row["log_id"])
+                w_plate = wl_row["plate_number"]
+                w_cam = wl_row["camera_id"]
+                w_reason = wl_row.get("reason", "Flagged Hotlist Vehicle")
+                w_time = wl_row["timestamp"]
+                w_loc = CAMERA_NODES.get(w_cam, {}).get("location", "Unknown Location")
+
+                col_wl_text, col_wl_btn = st.columns([0.8, 0.2])
+                with col_wl_text:
+                    st.warning(f"⚠️ **HOTLIST VEHICLE DETECTED:** Flagged Plate **`{w_plate}`** ({w_reason}) spotted at **{w_cam}** ({w_loc}) at `{w_time}`!")
+                with col_wl_btn:
+                    if st.button(f"👁️ Dismiss Alert #{l_id}", key=f"home_wl_dismiss_{l_id}", width="stretch"):
+                        conn_d = get_db_connection()
+                        cur_d = conn_d.cursor()
+                        try:
+                            cur_d.execute("INSERT INTO dismissed_alerts (log_id) VALUES (?)", (l_id,))
+                            conn_d.commit()
+                        except sqlite3.IntegrityError:
+                            pass
+                        conn_d.close()
+                        st.success(f"Alert #{l_id} dismissed!")
+                        time.sleep(0.5)
+                        st.rerun()
+
+        if not accident_df.empty or not active_watchlist_alerts.empty:
             st.markdown("---")
 
         st.markdown("### 🌐 Select Command Gateway")
 
-        # Gateway Grid Layout (Outside of any conditional blocks)
+        # Gateway Grid Layout
         col_g1, col_g2, col_g3 = st.columns(3)
         col_g4, col_g5, _ = st.columns(3)
 
@@ -414,7 +441,7 @@ else:
 
         with col_g4:
             st.info("### ⚠️ Gateway 4")
-            st.markdown("**Watchlist History & Police Hotlist**\n\nRegister hotlist plates, view alerts & dismissed logs.")
+            st.markdown("**Watchlist History & Police Hotlist**\n\nRegister hotlist plates, view interactive map & alerts.")
             if st.button("Open Watchlist Portal ➔", key="gw4_btn", width="stretch"):
                 st.session_state["active_gateway"] = "watchlist_history"
                 st.rerun()
@@ -664,13 +691,53 @@ else:
     # ---------------------------------------------------------
     # GATEWAY 4: WATCHLIST HISTORY & POLICE HOTLIST PORTAL
     # ---------------------------------------------------------
+    # ---------------------------------------------------------
+    # GATEWAY 4: WATCHLIST HISTORY & POLICE HOTLIST PORTAL
+    # ---------------------------------------------------------
     elif st.session_state["active_gateway"] == "watchlist_history":
         if st.button("⬅️ Back to Gateways"):
             st.session_state["active_gateway"] = None
             st.rerun()
 
-        st.subheader("⚠️ Watchlist Portal & Hotlist Detections")
+        st.subheader("⚠️ Watchlist Portal & Interactive Hotlist Tactical Map")
 
+        # 🗺️ TACTICAL MAP FOR HOTLIST DETECTIONS
+        st.markdown("##### 📍 Real-Time Hotlist Location Map")
+        wl_map = folium.Map(location=[17.3890, 78.4910], zoom_start=14, tiles="OpenStreetMap")
+
+        # Plot All Camera Nodes
+        for cam_id, data in CAMERA_NODES.items():
+            folium.Marker(
+                location=data["coords"],
+                tooltip=f"<b>{cam_id}</b><br>{data['location']}",
+                icon=folium.Icon(color="blue", icon="camera")
+            ).add_to(wl_map)
+
+        # Highlight Active Hotlist Detections
+        if not active_watchlist_alerts.empty:
+            wl_coords = []
+            for _, wl_spot in active_watchlist_alerts.iterrows():
+                w_cam = wl_spot["camera_id"]
+                w_p = wl_spot["plate_number"]
+                w_r = wl_spot.get("reason", "Flagged Vehicle")
+                w_t = wl_spot["timestamp"]
+                
+                if w_cam in CAMERA_NODES:
+                    c_pos = CAMERA_NODES[w_cam]["coords"]
+                    wl_coords.append(c_pos)
+                    
+                    folium.Marker(
+                        location=c_pos,
+                        popup=f"<b>🚨 HOTLIST DETECTED</b><br>Plate: <b>{w_p}</b><br>Reason: {w_r}<br>Time: {w_t}",
+                        icon=folium.Icon(color="orange", icon="warning-sign")
+                    ).add_to(wl_map)
+
+            if len(wl_coords) > 1:
+                AntPath(locations=wl_coords, color="#FF9900", weight=6, delay=800).add_to(wl_map)
+
+        st_folium(wl_map, width=1200, height=400, key="watchlist_tactical_map", returned_objects=[])
+
+        st.markdown("---")
         col_wl1, col_wl2 = st.columns([0.4, 0.6])
 
         with col_wl1:
@@ -678,7 +745,7 @@ else:
             with st.form("watchlist_form_internal", clear_on_submit=True):
                 new_plate = st.text_input("Enter Flagged Plate No:").upper().strip()
                 reason = st.text_input("Reason / Case Ref:")
-                submit_btn = st.form_submit_button("Add to Watchlist", use_container_width=True)
+                submit_btn = st.form_submit_button("Add to Watchlist", width="stretch")
 
                 if submit_btn and new_plate:
                     c_wl = get_db_connection()
@@ -702,7 +769,7 @@ else:
 
             st.markdown("##### 📋 Active Hotlist Registry")
             if not watchlist_df.empty:
-                st.dataframe(watchlist_df[["plate_number", "reason"]], use_container_width=True, hide_index=True)
+                st.dataframe(watchlist_df[["plate_number", "reason"]], width="stretch", hide_index=True)
             else:
                 st.info("No active plates registered on the hotlist.")
 
@@ -711,12 +778,12 @@ else:
             wl_sub1, wl_sub2 = st.tabs(["🟡 Active Watchlist Alerts", "✅ Completed / Dismissed History"])
             with wl_sub1:
                 if not active_watchlist_alerts.empty:
-                    st.dataframe(active_watchlist_alerts[["log_id", "timestamp", "camera_id", "plate_number", "reason"]], use_container_width=True, hide_index=True)
+                    st.dataframe(active_watchlist_alerts[["log_id", "timestamp", "camera_id", "plate_number", "reason"]], width="stretch", hide_index=True)
                 else:
                     st.info("No active undismissed hotlist alerts.")
             with wl_sub2:
                 if not dismissed_watchlist_matches.empty:
-                    st.dataframe(dismissed_watchlist_matches[["log_id", "timestamp", "camera_id", "plate_number", "reason"]], use_container_width=True, hide_index=True)
+                    st.dataframe(dismissed_watchlist_matches[["log_id", "timestamp", "camera_id", "plate_number", "reason"]], width="stretch", hide_index=True)
                 else:
                     st.info("No completed or dismissed watchlist history found.")
 
