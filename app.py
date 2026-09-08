@@ -352,11 +352,13 @@ else:
     # ---------------------------------------------------------
     # MAIN GATEWAY SELECTION MENU
     # ---------------------------------------------------------
+    # ---------------------------------------------------------
+    # MAIN GATEWAY SELECTION MENU
+    # ---------------------------------------------------------
     if st.session_state["active_gateway"] is None:
         
         # 🚨 TOP-LEVEL ACCIDENT ALERT BANNER WITH INLINE RESOLVE BUTTON
         if not accident_df.empty:
-            st.markdown("---")
             for _, crash_row in accident_df.iterrows():
                 c_id = int(crash_row["id"])
                 c_cam = crash_row["camera_id"]
@@ -364,7 +366,6 @@ else:
                 c_time = crash_row["timestamp"]
                 c_sev = crash_row.get("severity", "CRITICAL")
 
-                # Banner Layout: 80% Warning Banner | 20% Resolve Button
                 col_banner_text, col_banner_btn = st.columns([0.8, 0.2])
                 
                 with col_banner_text:
@@ -385,6 +386,54 @@ else:
             st.markdown("---")
 
         st.markdown("### 🌐 Select Command Gateway")
+
+        # Gateway Grid Layout (Outside of any conditional blocks)
+        col_g1, col_g2, col_g3 = st.columns(3)
+        col_g4, col_g5, _ = st.columns(3)
+
+        with col_g1:
+            st.info("### 🗺️ Gateway 1")
+            st.markdown("**Live Mapping & Database Analysis**\n\nReal-time trajectory map & vehicle registration logs.")
+            if st.button("Open Live Mapping ➔", key="gw1_btn", width="stretch"):
+                st.session_state["active_gateway"] = "live_mapping"
+                st.rerun()
+
+        with col_g2:
+            st.info("### 📷 Gateway 2")
+            st.markdown("**Camera Specifications**\n\nHardware specifications, GPS coordinates & FPS metadata.")
+            if st.button("Open Camera Specs ➔", key="gw2_btn", width="stretch"):
+                st.session_state["active_gateway"] = "camera_specs"
+                st.rerun()
+
+        with col_g3:
+            st.info("### 🚨 Gateway 3")
+            st.markdown("**Collision History**\n\nCritical accident alerts & emergency dispatch logs.")
+            if st.button("Open Collision History ➔", key="gw3_btn", width="stretch"):
+                st.session_state["active_gateway"] = "collision_history"
+                st.rerun()
+
+        with col_g4:
+            st.info("### ⚠️ Gateway 4")
+            st.markdown("**Watchlist History & Police Hotlist**\n\nRegister hotlist plates, view alerts & dismissed logs.")
+            if st.button("Open Watchlist Portal ➔", key="gw4_btn", width="stretch"):
+                st.session_state["active_gateway"] = "watchlist_history"
+                st.rerun()
+
+        with col_g5:
+            st.info("### 📜 Gateway 5")
+            st.markdown("**E-Challan Portal**\n\nAI automated ticket issuance & unpaid registry.")
+            if st.button("Open E-Challan Portal ➔", key="gw5_btn", width="stretch"):
+                st.session_state["active_gateway"] = "echallan_portal"
+                st.rerun()
+
+        # Bottom Logout Controls
+        st.markdown("<br><br>", unsafe_allow_html=True)
+        col_bot1, col_bot2 = st.columns([0.3, 0.7])
+        with col_bot1:
+            st.markdown(f"**👤 {st.session_state['user_name']}** ({st.session_state['user_role']})")
+            if st.button("🚪 Logout", key="bottom_logout_btn"):
+                st.session_state["confirm_logout"] = True
+                st.rerun()
 
     # ---------------------------------------------------------
     # GATEWAY 1: LIVE MAPPING & DATABASE ANALYSIS
