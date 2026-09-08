@@ -203,17 +203,19 @@ for cam_id, video_file in camera_files:
             current_time = time.strftime("%Y-%m-%d %H:%M:%S")
             location_name = "North Gate Signal (Barkatpura)"
 
+            # Check if an unresolved collision alert already exists for Cam 3
             cursor.execute(
                 "SELECT * FROM accident_alerts WHERE camera_id = ? AND status != 'RESOLVED'",
                 (cam_id,),
             )
             if not cursor.fetchone():
+                # STATUS SET TO 'ACTIVE_DISPATCH' FOR GATEWAY 3 RECOGNITION
                 cursor.execute(
                     """
                     INSERT INTO accident_alerts (timestamp, camera_id, location, severity, status)
                     VALUES (?, ?, ?, ?, ?)
                     """,
-                    (current_time, cam_id, location_name, "CRITICAL", "Dispatched"),
+                    (current_time, cam_id, location_name, "CRITICAL", "ACTIVE_DISPATCH"),
                 )
                 conn.commit()
 
