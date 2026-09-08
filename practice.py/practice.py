@@ -73,7 +73,7 @@ CREATE TABLE IF NOT EXISTS e_challans (
 """)
 conn.commit()
 
-# Fine Amounts Mapping (Focused on Two-Wheeler Safety & Direction Rules)
+# Fine Amounts Mapping (Two-Wheeler Safety & Lane Enforcement)
 FINE_AMOUNTS = {
     "No Helmet Riding": 500,
     "Triple Riding": 1000,
@@ -101,7 +101,6 @@ def analyze_rider_safety(frame, bike_box, person_model):
     if bike_crop.size == 0:
         return False, False
 
-    # Run YOLO pass on bike crop
     person_results = person_model(bike_crop, verbose=False)
     
     # Filter for COCO Class 0 (Person / Rider)
@@ -118,8 +117,6 @@ def analyze_rider_safety(frame, bike_box, person_model):
     # Analyze head region of each detected rider
     for pbox in rider_boxes:
         px1, py1, px2, py2 = map(int, pbox.xyxy[0])
-        
-        # Crop top 30% region representing the head
         head_crop = bike_crop[max(0, py1):min(bike_crop.shape[0], py1 + int((py2 - py1) * 0.30)), max(0, px1):min(bike_crop.shape[1], px2)]
         
         if head_crop.size > 0:
@@ -132,7 +129,7 @@ def analyze_rider_safety(frame, bike_box, person_model):
             
             skin_pixel_ratio = np.sum(skin_mask > 0) / (head_crop.shape[0] * head_crop.shape[1])
             
-            # If skin/hair area in top head region exceeds 15%, flag as No Helmet
+            # If skin/hair exposure in top head region exceeds 15%, flag as No Helmet
             if skin_pixel_ratio > 0.15:
                 is_no_helmet = True
 
@@ -225,7 +222,7 @@ for cam_id, video_file in camera_files:
                 print("   ↳ 🚑 108 Emergency Medical Services Notification Transmitted.")
                 print("   ↳ 🚔 Police Control Room (100/112) Dispatch Transmitted.\n")
 
-        # Process alternate frames for Cam_1 and Cam_2; process ALL frames for Cam_3 to catch fast two-wheelers
+        # Process alternate frames for Cam_1 and Cam_2; process ALL frames for Cam_3
         if cam_id != "Cam_3_Canteen" and frame_nmr % 2 != 0:
             continue
 
