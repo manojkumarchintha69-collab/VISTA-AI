@@ -353,59 +353,38 @@ else:
     # MAIN GATEWAY SELECTION MENU
     # ---------------------------------------------------------
     if st.session_state["active_gateway"] is None:
-        # Top-Left Profile Controls & Logout Button
-        top_col1, top_col2 = st.columns([0.4, 0.6])
-        with top_col1:
-            st.markdown(f"👤 **{st.session_state['user_name']}** ({st.session_state['user_role']})")
-            if st.button("🚪 Logout", key="top_left_logout_btn"):
-                st.session_state["confirm_logout"] = True
-                st.rerun()
+        
+        # 🚨 TOP-LEVEL ACCIDENT ALERT BANNER WITH INLINE RESOLVE BUTTON
+        if not accident_df.empty:
+            st.markdown("---")
+            for _, crash_row in accident_df.iterrows():
+                c_id = int(crash_row["id"])
+                c_cam = crash_row["camera_id"]
+                c_loc = crash_row.get("location", CAMERA_NODES.get(c_cam, {}).get("location", "Unknown Location"))
+                c_time = crash_row["timestamp"]
+                c_sev = crash_row.get("severity", "CRITICAL")
 
-        st.markdown("---")
+                # Banner Layout: 80% Warning Banner | 20% Resolve Button
+                col_banner_text, col_banner_btn = st.columns([0.8, 0.2])
+                
+                with col_banner_text:
+                    st.error(
+                        f"🚨 **CRITICAL INCIDENT DETECTED:** Collision alert triggered at **{c_cam}** ({c_loc}) at `{c_time}`! Emergency units notified."
+                    )
+                
+                with col_banner_btn:
+                    if st.button(f"✅ Resolve #{c_id}", key=f"home_resolve_btn_{c_id}", width="stretch", type="primary"):
+                        conn_res = get_db_connection()
+                        cur_res = conn_res.cursor()
+                        cur_res.execute("UPDATE accident_alerts SET status = 'RESOLVED' WHERE id = ?", (c_id,))
+                        conn_res.commit()
+                        conn_res.close()
+                        st.success(f"Incident #{c_id} resolved!")
+                        time.sleep(0.5)
+                        st.rerun()
+            st.markdown("---")
+
         st.markdown("### 🌐 Select Command Gateway")
-
-        # Row 1: Gateways 1, 2, 3 (3 Columns)
-        col_g1, col_g2, col_g3 = st.columns(3)
-
-        with col_g1:
-            st.info("### 🗺️ Gateway 1")
-            st.markdown("**Live Mapping & Database Analysis**\n\nReal-time trajectory map & vehicle registration logs.")
-            if st.button("Open Live Mapping ➔", use_container_width=True):
-                st.session_state["active_gateway"] = "live_mapping"
-                st.rerun()
-
-        with col_g2:
-            st.info("### 📷 Gateway 2")
-            st.markdown("**Camera Specifications**\n\nHardware specifications, GPS coordinates & FPS metadata.")
-            if st.button("Open Camera Specs ➔", use_container_width=True):
-                st.session_state["active_gateway"] = "camera_specs"
-                st.rerun()
-
-        with col_g3:
-            st.info("### 🚨 Gateway 3")
-            st.markdown("**Collision History**\n\nCritical accident alerts & emergency dispatch logs.")
-            if st.button("Open Collision History ➔", use_container_width=True):
-                st.session_state["active_gateway"] = "collision_history"
-                st.rerun()
-
-        st.markdown("<br>", unsafe_allow_html=True)
-
-        # Row 2: Gateways 4 & 5 (2 Equal-Width Columns for Balanced Grid Spacing)
-        col_g4, col_g5 = st.columns(2)
-
-        with col_g4:
-            st.info("### ⚠️ Gateway 4")
-            st.markdown("**Watchlist History & Police Hotlist**\n\nRegister hotlist plates, view alerts & dismissed logs.")
-            if st.button("Open Watchlist Portal ➔", use_container_width=True):
-                st.session_state["active_gateway"] = "watchlist_history"
-                st.rerun()
-
-        with col_g5:
-            st.info("### 📜 Gateway 5")
-            st.markdown("**E-Challan Portal**\n\nAI automated ticket issuance & unpaid registry.")
-            if st.button("Open E-Challan Portal ➔", use_container_width=True):
-                st.session_state["active_gateway"] = "echallan_portal"
-                st.rerun()
 
     # ---------------------------------------------------------
     # GATEWAY 1: LIVE MAPPING & DATABASE ANALYSIS
@@ -564,7 +543,7 @@ else:
         st.dataframe(pd.DataFrame(cam_spec_list), use_container_width=True, hide_index=True)
 
     # ---------------------------------------------------------
-    # GATEWAY 3: COLLISION HISTORY
+    # GATEWAY 3: COLLISION HISTORY & EMERGENCY DISPATCH
     # ---------------------------------------------------------
     elif st.session_state["active_gateway"] == "collision_history":
         if st.button("⬅️ Back to Gateways"):
@@ -572,15 +551,64 @@ else:
             st.rerun()
 
         st.subheader("🚨 Incident & Collision Audit History")
+
+        # Active vs Resolved Sub-tabs
         acc_sub1, acc_sub2 = st.tabs(["🔴 Active Incidents", "✅ Completed / Resolved History"])
+
         with acc_sub1:
+            st.markdown("##### 🚨 Live Unresolved Collision Alerts")
+            
             if not accident_df.empty:
-                st.dataframe(accident_df[["id", "timestamp", "camera_id", "location", "severity", "status"]], use_container_width=True, hide_index=True)
+                # Display individual incident action cards
+                for idx, crash_row in accident_df.iterrows():
+                    c_id = int(crash_row["id"])
+                    c_cam = crash_row["camera_id"]
+                    c_loc = crash_row.get("location", CAMERA_NODES.get(c_cam, {}).get("location", "Unknown Location"))
+                    c_time = crash_row["timestamp"]
+                    c_sev = crash_row.get("severity", "CRITICAL")
+
+                    col_acc1, col_acc2 = st.columns([0.75, 0.25])
+                    with col_acc1:
+                        st.error(f"""
+                        * **Incident ID:** `{c_id}` | **Severity:** `{c_sev}`
+                        * **Camera Node:** `{c_cam}` ({c_loc})
+                        * **Timestamp:** `{c_time}`
+                        * **Emergency Status:** Response Unit Dispatched
+                        """)
+                    with col_acc2:
+                        st.write("")
+                        st.write("")
+                        # Button to resolve active incident
+                        if st.button(f"✅ Mark Resolved #{c_id}", key=f"resolve_btn_{c_id}", width="stretch"):
+                            c_res = get_db_connection()
+                            cur_res = c_res.cursor()
+                            cur_res.execute(
+                                "UPDATE accident_alerts SET status = 'RESOLVED' WHERE id = ?", (c_id,)
+                            )
+                            c_res.commit()
+                            c_res.close()
+                            st.success(f"Incident #{c_id} resolved!")
+                            time.sleep(0.5)
+                            st.rerun()
+
+                st.markdown("---")
+                st.markdown("##### 📋 Active Collisions Data Log")
+                st.dataframe(
+                    accident_df[["id", "timestamp", "camera_id", "location", "severity", "status"]],
+                    width="stretch",
+                    hide_index=True
+                )
             else:
                 st.info("No active unresolved collision incidents.")
+
         with acc_sub2:
+            st.markdown("##### 📋 Completed / Resolved Incident History")
             if not acc_resolved_df.empty:
-                st.dataframe(acc_resolved_df[["id", "timestamp", "camera_id", "location", "severity", "status"]], use_container_width=True, hide_index=True)
+                st.dataframe(
+                    acc_resolved_df[["id", "timestamp", "camera_id", "location", "severity", "status"]],
+                    width="stretch",
+                    hide_index=True
+                )
             else:
                 st.info("No resolved collision history found.")
 
