@@ -5,6 +5,7 @@ from pathlib import Path
 from datetime import datetime
 
 import folium
+from folium.plugins import AntPath  # <--- ADD THIS LINE HERE
 import pandas as pd
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
@@ -409,30 +410,34 @@ else:
     # ---------------------------------------------------------
     # GATEWAY 1: LIVE MAPPING & DATABASE ANALYSIS
     # ---------------------------------------------------------
+    # ---------------------------------------------------------
+    # GATEWAY 1: LIVE MAPPING & DATABASE ANALYSIS
+    # ---------------------------------------------------------
     elif st.session_state["active_gateway"] == "live_mapping":
         if st.button("⬅️ Back to Gateways"):
             st.session_state["active_gateway"] = None
             st.rerun()
 
-        st.subheader("🗺️ Live Trajectory Map & Route Reconstruction")
+        st.subheader("🗺️ Live Trajectory Map & Road Route Reconstruction")
 
         # Dynamic Search Bar Input
-        search_plate = st.text_input("🔎 Enter Plate Number to Track Dynamic Route (e.g., WILDFILMS, TS09EA1234):", key="map_search").upper().strip()
+        search_plate = st.text_input("🔎 Enter Plate Number to Track Dynamic Route (e.g., SINC, WILDFILMS):", key="map_search").upper().strip()
 
-        # Filter Logs for Searched Plate
+        # Exact Match Filter
         target_hits = pd.DataFrame()
         if search_plate and not df.empty:
             target_hits = df[df["plate_number"].astype(str).str.strip().str.upper() == search_plate].sort_values(by="id", ascending=True)
-        # Base Map Focus (Center on searched plate's first known location, or default Hyderabad center)
+
+        # Base Map Focus
         initial_center = [17.3890, 78.4910]
         if not target_hits.empty:
             first_cam = target_hits.iloc[0]["camera_id"]
             if first_cam in CAMERA_NODES:
                 initial_center = CAMERA_NODES[first_cam]["coords"]
 
-        m = folium.Map(location=initial_center, zoom_start=14, tiles="OpenStreetMap")
+        m = folium.Map(location=initial_center, zoom_start=15, tiles="OpenStreetMap")
 
-        # Plot All Deployed Camera Nodes
+        # Plot Camera Nodes
         crash_cams = [r["camera_id"] for _, r in accident_df.iterrows()] if not accident_df.empty else []
         for cam_id, data in CAMERA_NODES.items():
             loc_title = data["location"]
@@ -444,42 +449,70 @@ else:
                 icon = folium.Icon(color="blue", icon="camera")
             folium.Marker(location=data["coords"], tooltip=f"<b>{cam_id}</b><br>{loc_title}", icon=icon).add_to(m)
 
-        # Draw Dynamic Route Trajectory Polyline
+        # Road Waypoints Mapping (connects camera nodes along real roads)
+        ROAD_WAYPOINTS = {
+            ("Cam_1_MainGate", "Cam_2_Junction"): [
+                [17.3910, 78.4890], [17.3910, 78.4925], [17.3875, 78.4925]
+            ],
+            ("Cam_2_Junction", "Cam_1_MainGate"): [
+                [17.3875, 78.4925], [17.3910, 78.4925], [17.3910, 78.4890]
+            ],
+            ("Cam_2_Junction", "Cam_3_Canteen"): [
+                [17.3875, 78.4925], [17.3850, 78.4925], [17.3850, 78.4960]
+            ],
+            ("Cam_3_Canteen", "Cam_2_Junction"): [
+                [17.3850, 78.4960], [17.3850, 78.4925], [17.3875, 78.4925]
+            ],
+            ("Cam_1_MainGate", "Cam_3_Canteen"): [
+                [17.3910, 78.4890], [17.3910, 78.4960], [17.3850, 78.4960]
+            ],
+        }
+
+        # Draw Road-Following Trajectory with Direction Flow Arrows
         if search_plate:
             if not target_hits.empty:
-                dynamic_coords = []
+                detailed_road_path = []
                 route_summary = []
+                camera_sequence = []
+
                 for _, row in target_hits.iterrows():
                     cid = row["camera_id"]
                     t_stamp = row.get("timestamp", "N/A")
                     if cid in CAMERA_NODES:
-                        coord = CAMERA_NODES[cid]["coords"]
-                        if not dynamic_coords or dynamic_coords[-1] != coord:
-                            dynamic_coords.append(coord)
-                            # NEW CODE (Using Markdown formatting)
+                        if not camera_sequence or camera_sequence[-1] != cid:
+                            camera_sequence.append(cid)
                             route_summary.append(f"**{cid}** ({t_stamp})")
-                
-                if len(dynamic_coords) > 1:
-                    folium.PolyLine(
-                        locations=dynamic_coords,
-                        color="#FF0000",
-                        weight=7,
-                        opacity=0.95,
-                        tooltip=f"Route for {search_plate}"
+
+                for i in range(len(camera_sequence) - 1):
+                    pair = (camera_sequence[i], camera_sequence[i+1])
+                    if pair in ROAD_WAYPOINTS:
+                        detailed_road_path.extend(ROAD_WAYPOINTS[pair])
+                    else:
+                        detailed_road_path.append(CAMERA_NODES[camera_sequence[i]]["coords"])
+                        detailed_road_path.append(CAMERA_NODES[camera_sequence[i+1]]["coords"])
+
+                if len(detailed_road_path) > 1:
+                    AntPath(
+                        locations=detailed_road_path,
+                        color="#0066FF",
+                        pulse_color="#FF3300",
+                        weight=6,
+                        delay=800,
+                        dash_array=[10, 20],
+                        tooltip=f"Directional Vehicle Path: {search_plate}"
                     ).add_to(m)
-                    
-                    # Highlight start and end points
-                    folium.CircleMarker(location=dynamic_coords[0], radius=8, color="green", fill=True, fill_color="green", popup="Start Point").add_to(m)
-                    folium.CircleMarker(location=dynamic_coords[-1], radius=8, color="red", fill=True, fill_color="red", popup="Last Spotted").add_to(m)
 
-                    st.success(f"📌 **Dynamic Trajectory Active:** Target `{search_plate}` tracked across sequence: " + " ➔ ".join(route_summary))
-                elif len(dynamic_coords) == 1:
-                    st.info(f"📍 **Target Stationed:** `{search_plate}` detected at single node: `{target_hits.iloc[0]['camera_id']}` at `{target_hits.iloc[0].get('timestamp', 'N/A')}`")
+                    folium.CircleMarker(location=detailed_road_path[0], radius=8, color="green", fill=True, fill_color="green", popup="Vehicle Entry Point").add_to(m)
+                    folium.CircleMarker(location=detailed_road_path[-1], radius=8, color="red", fill=True, fill_color="red", popup="Vehicle Last Spotted").add_to(m)
+
+                    st.success(f"📌 **Dynamic Directional Trajectory Active:** Target `{search_plate}` tracked along road route: " + " ➔ ".join(route_summary))
+                elif len(camera_sequence) == 1:
+                    st.info(f"📍 **Target Stationed:** `{search_plate}` detected at single node: `{camera_sequence[0]}`")
             else:
-                st.warning(f"⚠️ No vehicle records found in database matching plate number: `{search_plate}`")
+                st.warning(f"⚠️ No exact vehicle match found in database for plate number: `{search_plate}`")
 
-        # Render Map with unique key tied to search query to force map updates on search
-        st_folium(m, width=1200, height=480, key=f"folium_map_{search_plate}", returned_objects=[])
+        # Render Map with unique key tied to search query
+        st_folium(m, width=1200, height=500, key=f"folium_map_{search_plate}", returned_objects=[])
 
         st.markdown("---")
         st.subheader("📊 Comprehensive Vehicle Log Audit & Analytics")
@@ -487,7 +520,6 @@ else:
             col_db1, col_db2 = st.columns([0.6, 0.4])
             with col_db1:
                 st.markdown("##### 📋 Complete Vehicle Log Table")
-                # Highlight searched rows in the log table
                 if search_plate and not target_hits.empty:
                     st.dataframe(target_hits[["id", "timestamp", "camera_id", "plate_number"]], width="stretch", hide_index=True)
                 else:
