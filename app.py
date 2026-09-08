@@ -795,57 +795,41 @@ else:
                     st.info("No completed or dismissed watchlist history found.")
 
     # ---------------------------------------------------------
-    # GATEWAY 5: E-CHALLAN PORTAL
+    # GATEWAY 5: E-CHALLAN PORTAL & AUTO-VIOLATIONS
     # ---------------------------------------------------------
     elif st.session_state["active_gateway"] == "echallan_portal":
         if st.button("⬅️ Back to Gateways"):
             st.session_state["active_gateway"] = None
             st.rerun()
 
-        st.subheader("📜 AI Automated E-Challan Generation Engine")
+        st.subheader("📜 AI E-Challan Issuance & Violation Portal")
 
-        conn_v = get_db_connection()
-        try:
-            cv_violations_df = pd.read_sql_query("SELECT * FROM auto_violations ORDER BY id DESC", conn_v)
-        except Exception:
-            cv_violations_df = pd.DataFrame()
-        conn_v.close()
+        # Read both auto_violations and official e_challans
+        conn_ec = get_db_connection()
+        auto_viol_df = pd.read_sql_query("SELECT * FROM auto_violations ORDER BY id DESC", conn_ec)
+        echallan_df = pd.read_sql_query("SELECT * FROM e_challans ORDER BY id DESC", conn_ec)
+        conn_ec.close()
 
-        col_auto1, col_auto2 = st.columns([0.5, 0.5])
-        with col_auto1:
-            st.markdown("##### ⚡ Auto-Detected Traffic Violations Feed")
-            if not cv_violations_df.empty:
-                st.dataframe(cv_violations_df[["plate_number", "violation_type", "fine_amount", "camera_id", "reason"]], use_container_width=True, hide_index=True)
-                if st.button("⚡ Auto-Generate & Issue All Pending Challans", use_container_width=True):
-                    c_auto = get_db_connection()
-                    cur_auto = c_auto.cursor()
-                    issued_count = 0
-                    for _, v_item in cv_violations_df.iterrows():
-                        c_num = f"TS-CHALLAN-{random.randint(100000, 999999)}"
-                        try:
-                            cur_auto.execute(
-                                """
-                                INSERT INTO e_challans (challan_no, plate_number, violation_type, fine_amount, camera_id, timestamp, status)
-                                VALUES (?, ?, ?, ?, ?, ?, ?)
-                                """,
-                                (c_num, v_item["plate_number"], v_item["violation_type"], int(v_item["fine_amount"]), v_item["camera_id"], v_item["timestamp"], "UNPAID")
-                            )
-                            issued_count += 1
-                        except sqlite3.IntegrityError:
-                            pass
-                    c_auto.commit()
-                    c_auto.close()
-                    st.success(f"✅ Successfully issued {issued_count} automated E-Challans!")
-                    st.rerun()
+        ch_tab1, ch_tab2 = st.tabs(["🚨 Auto-Detected AI Violations", "📋 Issued E-Challan Registry"])
+
+        with ch_tab1:
+            st.markdown("##### 🤖 Live Computer Vision Traffic Violations")
+            if not auto_viol_df.empty:
+                st.dataframe(
+                    auto_viol_df[["id", "timestamp", "camera_id", "plate_number", "violation_type", "fine_amount", "reason"]],
+                    width="stretch",
+                    hide_index=True
+                )
             else:
-                st.info("No active automated violations detected in current database feed.")
+                st.info("No AI auto-violations recorded yet.")
 
-        with col_auto2:
-            st.markdown("##### 📋 Official Issued E-Challans Registry")
-            conn_ch = get_db_connection()
-            challans_df = pd.read_sql_query("SELECT * FROM e_challans ORDER BY id DESC", conn_ch)
-            conn_ch.close()
-            if not challans_df.empty:
-                st.dataframe(challans_df[["challan_no", "plate_number", "violation_type", "fine_amount", "camera_id", "status"]], use_container_width=True, hide_index=True)
+        with ch_tab2:
+            st.markdown("##### 📜 Official Issued E-Challan Audit Trail")
+            if not echallan_df.empty:
+                st.dataframe(
+                    echallan_df[["challan_no", "plate_number", "violation_type", "fine_amount", "camera_id", "timestamp", "status"]],
+                    width="stretch",
+                    hide_index=True
+                )
             else:
-                st.info("No automated e-challans issued yet.")
+                st.info("No official e-Challans issued.")
