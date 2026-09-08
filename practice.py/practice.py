@@ -73,9 +73,8 @@ CREATE TABLE IF NOT EXISTS e_challans (
 """)
 conn.commit()
 
-# Fine Amounts Mapping
+# Fine Amounts Mapping (Focused on Two-Wheeler Safety & Direction Rules)
 FINE_AMOUNTS = {
-    "Red Light Signal Jumping": 1500,
     "No Helmet Riding": 500,
     "Triple Riding": 1000,
     "Wrong-Route / One-Way Driving": 2000
@@ -83,46 +82,18 @@ FINE_AMOUNTS = {
 
 # Camera Directional Vectors Calibration (in degrees)
 CAM_DIRECTION_ANGLES = {
-    "Cam_1_MainGate": (0, 360),     # Bi-directional gate flow (prevents false alerts)
+    "Cam_1_MainGate": (0, 360),     # Bi-directional gate flow
     "Cam_2_Junction": (180, 360),   # Downward traffic flow
-    "Cam_3_Canteen": (0, 270)       # Transverse one-way flow
+    "Cam_3_Canteen": (0, 270)       # Transverse flow
 }
 
 # ---------------------------------------------------------
-# 2. Real-World Computer Vision Detection Engines
+# 2. Real-World Computer Vision Helper Functions
 # ---------------------------------------------------------
-
-def check_red_light_signal_jump(frame, light_roi_coords, vehicle_bottom_y, stop_line_y):
-    """
-    1. Crops traffic signal ROI and detects RED LED state via HSV thresholding.
-    2. Checks if vehicle bottom y-coordinate crosses virtual stop line during active RED phase.
-    """
-    if light_roi_coords is None:
-        return False, "GREEN"
-        
-    x1, y1, x2, y2 = light_roi_coords
-    light_crop = frame[y1:y2, x1:x2]
-    
-    if light_crop.size == 0:
-        return False, "GREEN"
-
-    hsv = cv2.cvtColor(light_crop, cv2.COLOR_BGR2HSV)
-    lower_red1 = np.array([0, 100, 100])
-    upper_red1 = np.array([10, 255, 255])
-    lower_red2 = np.array([160, 100, 100])
-    upper_red2 = np.array([180, 255, 255])
-
-    mask = cv2.inRange(hsv, lower_red1, upper_red1) + cv2.inRange(hsv, lower_red2, upper_red2)
-    is_red = np.sum(mask > 0) > 40
-    signal_status = "RED" if is_red else "GREEN"
-
-    is_violation = is_red and (vehicle_bottom_y > stop_line_y)
-    return is_violation, signal_status
-
 
 def analyze_rider_safety(frame, bike_box, person_model):
     """
-    Isolates motorcycle ROI to count riders (Triple Riding) and checks upper head ROI for helmet presence.
+    Isolates motorcycle ROI to count riders (Triple Riding) and analyzes upper head ROI for helmet presence.
     """
     bx1, by1, bx2, by2 = bike_box
     bike_crop = frame[by1:by2, bx1:bx2]
@@ -133,7 +104,7 @@ def analyze_rider_safety(frame, bike_box, person_model):
     # Run YOLO pass on bike crop
     person_results = person_model(bike_crop, verbose=False)
     
-    # 1. Strictly filter for COCO Class 0 (Person / Rider)
+    # Filter for COCO Class 0 (Person / Rider)
     rider_boxes = []
     if person_results and len(person_results[0].boxes) > 0:
         for box in person_results[0].boxes:
@@ -144,7 +115,7 @@ def analyze_rider_safety(frame, bike_box, person_model):
     is_triple_riding = rider_count > 2
     is_no_helmet = False
 
-    # 2. Analyze head region of each detected rider
+    # Analyze head region of each detected rider
     for pbox in rider_boxes:
         px1, py1, px2, py2 = map(int, pbox.xyxy[0])
         
@@ -152,10 +123,9 @@ def analyze_rider_safety(frame, bike_box, person_model):
         head_crop = bike_crop[max(0, py1):min(bike_crop.shape[0], py1 + int((py2 - py1) * 0.30)), max(0, px1):min(bike_crop.shape[1], px2)]
         
         if head_crop.size > 0:
-            # Convert to HSV to analyze skin tones vs. solid helmet surfaces
             hsv_head = cv2.cvtColor(head_crop, cv2.COLOR_BGR2HSV)
             
-            # Skin color mask in HSV (detects bare head/face exposure)
+            # Skin/hair tone mask in HSV
             lower_skin = np.array([0, 20, 70], dtype=np.uint8)
             upper_skin = np.array([20, 255, 255], dtype=np.uint8)
             skin_mask = cv2.inRange(hsv_head, lower_skin, upper_skin)
@@ -195,6 +165,7 @@ def log_violation_to_db(timestamp, camera_id, plate_number, v_type, reason):
     conn.commit()
     print(f"  🚨 [AUTO-VIOLATION DETECTED] {camera_id} @ {timestamp} ➔ {plate_number} | {v_type} ({reason})")
 
+
 # ---------------------------------------------------------
 # 3. Model Initialization & Video Queue Setup
 # ---------------------------------------------------------
@@ -216,7 +187,7 @@ for cam_id, video_file in camera_files:
         print(f"⚠️ Skipping {video_file} - File not found!")
         continue
 
-    # RESET centroid tracker per camera feed to prevent cross-camera vector jumps
+    # Reset centroid tracking per camera feed
     previous_centroids = {}
 
     print(f"\n🎥 Processing Stream: {cam_id} ({video_file})...")
@@ -254,8 +225,8 @@ for cam_id, video_file in camera_files:
                 print("   ↳ 🚑 108 Emergency Medical Services Notification Transmitted.")
                 print("   ↳ 🚔 Police Control Room (100/112) Dispatch Transmitted.\n")
 
-        # Process alternate frames for performance efficiency
-        if frame_nmr % 2 != 0:
+        # Process alternate frames for Cam_1 and Cam_2; process ALL frames for Cam_3 to catch fast two-wheelers
+        if cam_id != "Cam_3_Canteen" and frame_nmr % 2 != 0:
             continue
 
         results = model(frame, verbose=False)
@@ -270,8 +241,7 @@ for cam_id, video_file in camera_files:
                     crop = frame[y1:y2, x1:x2]
                     curr_centroid = ((x1 + x2) // 2, (y1 + y2) // 2)
 
-                    # Filter tiny or distant crops to maintain fast CPU inference
-                    if crop.shape[0] < 25 or crop.shape[1] < 50:
+                    if crop.shape[0] < 20 or crop.shape[1] < 40:
                         continue
 
                     try:
@@ -299,15 +269,7 @@ for cam_id, video_file in camera_files:
                                 # REAL-WORLD COMPUTER VISION VIOLATION EVALUATION
                                 # ---------------------------------------------------------
 
-                                # 1. Signal Jump Check (Targeted at Junction Nodes)
-                                if cam_id in ["Cam_2_Junction", "Cam_3_Canteen"]:
-                                    is_signal_jump, current_light = check_red_light_signal_jump(
-                                        frame, light_roi_coords=[400, 50, 450, 150], vehicle_bottom_y=y2, stop_line_y=300
-                                    )
-                                    if is_signal_jump:
-                                        log_violation_to_db(log_time, cam_id, plate_text, "Red Light Signal Jumping", "Crossed Stop Line During Active RED Phase")
-
-                                # 2. Motorcycle Rider & Helmet Safety Check
+                                # 1. TWO-WHEELER RIDER SAFETY CHECK (No Helmet & Triple Riding)
                                 if cls_id == 3:  # Class 3 = Motorcycle
                                     is_triple, is_no_helmet = analyze_rider_safety(
                                         frame, bike_box=[x1, y1, x2, y2], person_model=model
@@ -317,7 +279,7 @@ for cam_id, video_file in camera_files:
                                     if is_no_helmet:
                                         log_violation_to_db(log_time, cam_id, plate_text, "No Helmet Riding", "Unhelmeted Two-Wheeler Rider")
 
-                                # 3. Wrong-Way Vector Direction Tracking (Calibrated per node)
+                                # 2. WRONG-WAY VECTOR DIRECTION TRACKING
                                 if plate_text in previous_centroids:
                                     prev_centroid = previous_centroids[plate_text]
                                     allowed_range = CAM_DIRECTION_ANGLES.get(cam_id, (0, 360))
