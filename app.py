@@ -457,7 +457,8 @@ else:
                         coord = CAMERA_NODES[cid]["coords"]
                         if not dynamic_coords or dynamic_coords[-1] != coord:
                             dynamic_coords.append(coord)
-                            route_summary.append(f"<b>{cid}</b> ({t_stamp})")
+                            # NEW CODE (Using Markdown formatting)
+                            route_summary.append(f"**{cid}** ({t_stamp})")
                 
                 if len(dynamic_coords) > 1:
                     folium.PolyLine(
