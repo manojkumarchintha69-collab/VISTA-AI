@@ -446,7 +446,6 @@ else:
             folium.Marker(location=data["coords"], tooltip=f"<b>{cam_id}</b><br>{loc_title}", icon=icon).add_to(m)
 
         # Draw Dynamic Route Trajectory Polyline
-        # Draw Dynamic Route Trajectory Polyline
         if search_plate:
             if not target_hits.empty:
                 dynamic_coords = []
@@ -458,8 +457,7 @@ else:
                         coord = CAMERA_NODES[cid]["coords"]
                         if not dynamic_coords or dynamic_coords[-1] != coord:
                             dynamic_coords.append(coord)
-                            # Fixed Markdown syntax below:
-                            route_summary.append(f"**{cid}** ({t_stamp})")
+                            route_summary.append(f"<b>{cid}</b> ({t_stamp})")
                 
                 if len(dynamic_coords) > 1:
                     folium.PolyLine(
@@ -470,11 +468,35 @@ else:
                         tooltip=f"Route for {search_plate}"
                     ).add_to(m)
                     
+                    # Highlight start and end points
                     folium.CircleMarker(location=dynamic_coords[0], radius=8, color="green", fill=True, fill_color="green", popup="Start Point").add_to(m)
                     folium.CircleMarker(location=dynamic_coords[-1], radius=8, color="red", fill=True, fill_color="red", popup="Last Spotted").add_to(m)
 
-                    # Now renders cleanly without raw HTML tags visible!
                     st.success(f"📌 **Dynamic Trajectory Active:** Target `{search_plate}` tracked across sequence: " + " ➔ ".join(route_summary))
+                elif len(dynamic_coords) == 1:
+                    st.info(f"📍 **Target Stationed:** `{search_plate}` detected at single node: `{target_hits.iloc[0]['camera_id']}` at `{target_hits.iloc[0].get('timestamp', 'N/A')}`")
+            else:
+                st.warning(f"⚠️ No vehicle records found in database matching plate number: `{search_plate}`")
+
+        # Render Map with unique key tied to search query to force map updates on search
+        st_folium(m, width=1200, height=480, key=f"folium_map_{search_plate}", returned_objects=[])
+
+        st.markdown("---")
+        st.subheader("📊 Comprehensive Vehicle Log Audit & Analytics")
+        if not df.empty:
+            col_db1, col_db2 = st.columns([0.6, 0.4])
+            with col_db1:
+                st.markdown("##### 📋 Complete Vehicle Log Table")
+                # Highlight searched rows in the log table
+                if search_plate and not target_hits.empty:
+                    st.dataframe(target_hits[["id", "timestamp", "camera_id", "plate_number"]], width="stretch", hide_index=True)
+                else:
+                    st.dataframe(df[["id", "timestamp", "camera_id", "plate_number"]], width="stretch", hide_index=True)
+            with col_db2:
+                st.markdown("##### 📈 Camera Detections Breakdown")
+                cam_counts = df["camera_id"].value_counts().reset_index()
+                cam_counts.columns = ["Camera Node", "Detections"]
+                st.bar_chart(data=cam_counts.set_index("Camera Node"))
 
     # ---------------------------------------------------------
     # GATEWAY 2: CAMERA SPECIFICATIONS
