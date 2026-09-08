@@ -1,0 +1,8 @@
+streamlit>=1.30.0
+streamlit-autorefresh
+streamlit-folium
+folium
+pandas
+ultralytics
+easyocr
+opencv-python-headless
