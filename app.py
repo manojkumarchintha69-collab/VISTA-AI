@@ -794,7 +794,7 @@ else:
                 else:
                     st.info("No completed or dismissed watchlist history found.")
 
-    # ---------------------------------------------------------
+   # ---------------------------------------------------------
     # GATEWAY 5: E-CHALLAN PORTAL & AUTO-VIOLATIONS
     # ---------------------------------------------------------
     elif st.session_state["active_gateway"] == "echallan_portal":
@@ -804,7 +804,7 @@ else:
 
         st.subheader("📜 AI E-Challan Issuance & Violation Portal")
 
-        # Read both auto_violations and official e_challans
+        # Read directly from SQLite tables updated by practice.py
         conn_ec = get_db_connection()
         auto_viol_df = pd.read_sql_query("SELECT * FROM auto_violations ORDER BY id DESC", conn_ec)
         echallan_df = pd.read_sql_query("SELECT * FROM e_challans ORDER BY id DESC", conn_ec)
@@ -821,7 +821,7 @@ else:
                     hide_index=True
                 )
             else:
-                st.info("No AI auto-violations recorded yet.")
+                st.info("No AI auto-violations detected in current video feeds.")
 
         with ch_tab2:
             st.markdown("##### 📜 Official Issued E-Challan Audit Trail")

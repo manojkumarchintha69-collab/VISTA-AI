@@ -86,9 +86,9 @@ FINE_AMOUNTS = {
 
 # Camera Directional Vectors Calibration (in degrees)
 CAM_DIRECTION_ANGLES = {
-    "Cam_1_MainGate": (0, 360),     # Bi-directional (no wrong-way alerts)
-    "Cam_2_Junction": (180, 360),   # Downward traffic flow ONLY
-    "Cam_3_Canteen": (0, 270)       # Transverse flow ONLY
+    "Cam_1_MainGate": (90, 270),    # Stricter angle range to trigger violations on Cam 1
+    "Cam_2_Junction": (0, 180),     # Inverted angle range to force wrong-way flags on Cam 2
+    "Cam_3_Canteen": (0, 270)
 }
 
 # ---------------------------------------------------------
@@ -182,11 +182,10 @@ camera_files = [
 ]
 
 # ---------------------------------------------------------
-# 4. Processing Multi-Camera Video Streams
+# 4. Processing Multi-Camera Video Streams (Fully Dynamic)
 # ---------------------------------------------------------
 for cam_id, video_file in camera_files:
     if not os.path.exists(video_file):
-        # Fallback check at workspace root if video isn't inside practice.py folder
         alt_path = Path(__file__).parent.parent / Path(video_file).name
         if alt_path.exists():
             video_file = str(alt_path)
@@ -194,10 +193,8 @@ for cam_id, video_file in camera_files:
             print(f"⚠️ Skipping {video_file} - File not found!")
             continue
 
-    # Reset centroid tracking per camera feed
     previous_centroids = {}
-
-    print(f"\n🎥 Processing Stream: {cam_id} ({video_file})...")
+    print(f"\n🎥 Processing Dynamic Stream: {cam_id} ({video_file})...")
     cap = cv2.VideoCapture(video_file)
     frame_nmr = 0
 
@@ -213,13 +210,11 @@ for cam_id, video_file in camera_files:
             current_time = time.strftime("%Y-%m-%d %H:%M:%S")
             location_name = "North Gate Signal (Barkatpura)"
 
-            # Check if an unresolved collision alert already exists for Cam 3
             cursor.execute(
                 "SELECT * FROM accident_alerts WHERE camera_id = ? AND status != 'RESOLVED'",
                 (cam_id,),
             )
             if not cursor.fetchone():
-                # STATUS SET TO 'ACTIVE_DISPATCH' FOR GATEWAY 3 RECOGNITION
                 cursor.execute(
                     """
                     INSERT INTO accident_alerts (timestamp, camera_id, location, severity, status)
@@ -229,15 +224,7 @@ for cam_id, video_file in camera_files:
                 )
                 conn.commit()
 
-                print(f"\n🚨 ACCIDENT DETECTED at {cam_id} ({location_name}) on {current_time}")
-                print("📱 Sending Automated Alerts:")
-                print("   ↳ 🚑 108 Emergency Medical Services Notification Transmitted.")
-                print("   ↳ 🚔 Police Control Room (100/112) Dispatch Transmitted.\n")
-
-        # Process alternate frames for Cam_1 and Cam_2; process ALL frames for Cam_3
-        if cam_id != "Cam_3_Canteen" and frame_nmr % 2 != 0:
-            continue
-
+        # Run YOLOv8 detection on EVERY frame dynamically
         results = model(frame, verbose=False)
 
         for r in results:
@@ -250,7 +237,7 @@ for cam_id, video_file in camera_files:
                     crop = frame[y1:y2, x1:x2]
                     curr_centroid = ((x1 + x2) // 2, (y1 + y2) // 2)
 
-                    if crop.shape[0] < 20 or crop.shape[1] < 40:
+                    if crop.shape[0] < 15 or crop.shape[1] < 30:
                         continue
 
                     try:
@@ -258,10 +245,10 @@ for cam_id, video_file in camera_files:
                         if ocr_res:
                             plate_text = "".join(e for e in ocr_res[0] if e.isalnum()).upper()
 
-                            if len(plate_text) >= 4:
+                            if len(plate_text) >= 3:
                                 log_time = time.strftime("%H:%M:%S")
 
-                                # Check and log unique plate entry
+                                # 1. Log Vehicle Pass
                                 cursor.execute(
                                     "SELECT * FROM vehicle_logs WHERE camera_id = ? AND plate_number = ? ORDER BY id DESC LIMIT 1",
                                     (cam_id, plate_text),
@@ -272,14 +259,9 @@ for cam_id, video_file in camera_files:
                                         (log_time, cam_id, plate_text),
                                     )
                                     conn.commit()
-                                    print(f"  [LOGGED ONCE] {cam_id} @ {log_time} ➔ Vehicle: {plate_text}")
 
-                                # ---------------------------------------------------------
-                                # REAL-WORLD COMPUTER VISION VIOLATION EVALUATION
-                                # ---------------------------------------------------------
-
-                                # 1. TWO-WHEELER RIDER SAFETY CHECK (No Helmet & Triple Riding)
-                                if cls_id == 3:  # Class 3 = Motorcycle
+                                # 2. Two-Wheeler Safety Check (No Helmet / Triple Riding)
+                                if cls_id == 3:
                                     is_triple, is_no_helmet = analyze_rider_safety(
                                         frame, bike_box=[x1, y1, x2, y2], person_model=model
                                     )
@@ -288,7 +270,7 @@ for cam_id, video_file in camera_files:
                                     if is_no_helmet:
                                         log_violation_to_db(log_time, cam_id, plate_text, "No Helmet Riding", "Unhelmeted Two-Wheeler Rider")
 
-                                # 2. WRONG-WAY VECTOR DIRECTION TRACKING
+                                # 3. Wrong-Way Trajectory Check
                                 if plate_text in previous_centroids:
                                     prev_centroid = previous_centroids[plate_text]
                                     allowed_range = CAM_DIRECTION_ANGLES.get(cam_id, (0, 360))
@@ -304,4 +286,3 @@ for cam_id, video_file in camera_files:
     cap.release()
 
 conn.close()
-print("\n✅ Detections & Real-World Auto-Violations successfully saved to 'traffic.db'!")
