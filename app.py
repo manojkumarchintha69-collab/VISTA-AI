@@ -468,49 +468,60 @@ else:
             ],
         }
 
-        # Draw Road-Following Trajectory with Direction Flow Arrows
+        # Draw Dynamic Directional Road Trajectory
         if search_plate:
             if not target_hits.empty:
-                detailed_road_path = []
+                dynamic_coords = []
                 route_summary = []
-                camera_sequence = []
 
                 for _, row in target_hits.iterrows():
                     cid = row["camera_id"]
                     t_stamp = row.get("timestamp", "N/A")
                     if cid in CAMERA_NODES:
-                        if not camera_sequence or camera_sequence[-1] != cid:
-                            camera_sequence.append(cid)
+                        coord = CAMERA_NODES[cid]["coords"]
+                        # Avoid duplicate adjacent node tracking
+                        if not dynamic_coords or dynamic_coords[-1] != coord:
+                            dynamic_coords.append(coord)
                             route_summary.append(f"**{cid}** ({t_stamp})")
 
-                for i in range(len(camera_sequence) - 1):
-                    pair = (camera_sequence[i], camera_sequence[i+1])
-                    if pair in ROAD_WAYPOINTS:
-                        detailed_road_path.extend(ROAD_WAYPOINTS[pair])
-                    else:
-                        detailed_road_path.append(CAMERA_NODES[camera_sequence[i]]["coords"])
-                        detailed_road_path.append(CAMERA_NODES[camera_sequence[i+1]]["coords"])
-
-                if len(detailed_road_path) > 1:
+                if len(dynamic_coords) > 1:
+                    # Animated directional flow path following nodes
                     AntPath(
-                        locations=detailed_road_path,
-                        color="#0066FF",
-                        pulse_color="#FF3300",
-                        weight=6,
-                        delay=800,
-                        dash_array=[10, 20],
-                        tooltip=f"Directional Vehicle Path: {search_plate}"
+                        locations=dynamic_coords,
+                        color="#FF0055",
+                        pulse_color="#00FFFF",
+                        weight=7,
+                        delay=600,
+                        dash_array=[15, 30],
+                        tooltip=f"Live Route: {search_plate}"
                     ).add_to(m)
 
-                    folium.CircleMarker(location=detailed_road_path[0], radius=8, color="green", fill=True, fill_color="green", popup="Vehicle Entry Point").add_to(m)
-                    folium.CircleMarker(location=detailed_road_path[-1], radius=8, color="red", fill=True, fill_color="red", popup="Vehicle Last Spotted").add_to(m)
+                    # Green Marker for Start, Red Marker for Last Location
+                    folium.CircleMarker(
+                        location=dynamic_coords[0],
+                        radius=9,
+                        color="#00FF00",
+                        fill=True,
+                        fill_color="#00FF00",
+                        fill_opacity=0.9,
+                        popup="Start Point"
+                    ).add_to(m)
 
-                    st.success(f"📌 **Dynamic Directional Trajectory Active:** Target `{search_plate}` tracked along road route: " + " ➔ ".join(route_summary))
-                elif len(camera_sequence) == 1:
-                    st.info(f"📍 **Target Stationed:** `{search_plate}` detected at single node: `{camera_sequence[0]}`")
+                    folium.CircleMarker(
+                        location=dynamic_coords[-1],
+                        radius=9,
+                        color="#FF0000",
+                        fill=True,
+                        fill_color="#FF0000",
+                        fill_opacity=0.9,
+                        popup="Last Spotted Location"
+                    ).add_to(m)
+
+                    st.success(f"📌 **Dynamic Directional Trajectory Active:** Target `{search_plate}` tracked along sequence: " + " ➔ ".join(route_summary))
+                elif len(dynamic_coords) == 1:
+                    st.info(f"📍 **Target Stationed:** `{search_plate}` detected at single node: `{target_hits.iloc[0]['camera_id']}`")
             else:
                 st.warning(f"⚠️ No exact vehicle match found in database for plate number: `{search_plate}`")
-
         # Render Map with unique key tied to search query
         st_folium(m, width=1200, height=500, key=f"folium_map_{search_plate}", returned_objects=[])
 
