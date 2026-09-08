@@ -86,9 +86,9 @@ FINE_AMOUNTS = {
 
 # Camera Directional Vectors Calibration (in degrees)
 CAM_DIRECTION_ANGLES = {
-    "Cam_1_MainGate": (0, 360),     # Bi-directional gate flow
-    "Cam_2_Junction": (180, 360),   # Downward traffic flow
-    "Cam_3_Canteen": (0, 270)       # Transverse flow
+    "Cam_1_MainGate": (0, 360),     # Bi-directional (no wrong-way alerts)
+    "Cam_2_Junction": (180, 360),   # Downward traffic flow ONLY
+    "Cam_3_Canteen": (0, 270)       # Transverse flow ONLY
 }
 
 # ---------------------------------------------------------
